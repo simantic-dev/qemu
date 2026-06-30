@@ -98,6 +98,7 @@ struct SimanticPcieProxyState {
     QemuThread sender_thread;
     bool running;
     QemuMutex dma_lock;         /* serialises pci_dma_read/write calls */
+    QemuMutex main_tx_lock;     /* serialises main_fd writes (vCPU/timer vs sender thread) */
 
     /* device properties */
     uint16_t vendor_id;
@@ -167,7 +168,13 @@ static uint64_t simantic_bar0_read(void *opaque, hwaddr offset, unsigned size)
         .peripheral_index = 0,
     };
 
-    if(!proto_send(s->main_fd, &req)) {
+    /* The sender thread may interleave a DMA-response write on main_fd while
+     * the RTL services this read (RTL-initiated DMA inside a BAR access). Guard
+     * the request send; the recv side is single-reader (BQL-serialised vCPU). */
+    qemu_mutex_lock(&s->main_tx_lock);
+    bool sent = proto_send(s->main_fd, &req);
+    qemu_mutex_unlock(&s->main_tx_lock);
+    if(!sent) {
         error_report("simantic-pcie-proxy: send readRequest failed");
         return ~0ULL;
     }
@@ -198,7 +205,10 @@ static void simantic_bar0_write(void *opaque, hwaddr offset,
         .peripheral_index = 0,
     };
 
-    if(!proto_send(s->main_fd, &req)) {
+    qemu_mutex_lock(&s->main_tx_lock);
+    bool sent = proto_send(s->main_fd, &req);
+    qemu_mutex_unlock(&s->main_tx_lock);
+    if(!sent) {
         error_report("simantic-pcie-proxy: send writeRequest failed");
         return;
     }
@@ -233,13 +243,19 @@ static void simantic_handle_dma_write(SimanticPcieProxyState *s,
     pci_dma_write(&s->parent_obj, host_addr, &data, sizeof(data));
     qemu_mutex_unlock(&s->dma_lock);
 
+    /* The Verilated side reads pushConfirmation via receive(), which always
+     * reads the MAIN socket (see socket_channel.cpp). So the confirmation must
+     * be sent on main_fd, not sender_fd. main_tx_lock serialises main_fd writes
+     * against the vCPU/timer threads. */
     Protocol conf = {
         .action_id        = ACTION_PUSH_CONFIRM,
         .addr             = 0,
         .value            = 0,
         .peripheral_index = 0,
     };
-    proto_send(s->sender_fd, &conf);
+    qemu_mutex_lock(&s->main_tx_lock);
+    proto_send(s->main_fd, &conf);
+    qemu_mutex_unlock(&s->main_tx_lock);
 }
 
 static void simantic_handle_dma_read(SimanticPcieProxyState *s,
@@ -250,14 +266,17 @@ static void simantic_handle_dma_read(SimanticPcieProxyState *s,
     pci_dma_read(&s->parent_obj, host_addr, &data, sizeof(data));
     qemu_mutex_unlock(&s->dma_lock);
 
-    /* Respond with ACTION_WRITE_REQUEST carrying the read data */
+    /* requestFromAgent() on the Verilated side reads the data via receive()
+     * (MAIN socket) and expects ACTION_WRITE_REQUEST. Send on main_fd. */
     Protocol resp = {
         .action_id        = ACTION_WRITE_REQUEST,
         .addr             = host_addr,
         .value            = data,
         .peripheral_index = 0,
     };
-    proto_send(s->sender_fd, &resp);
+    qemu_mutex_lock(&s->main_tx_lock);
+    proto_send(s->main_fd, &resp);
+    qemu_mutex_unlock(&s->main_tx_lock);
 }
 
 static void *simantic_sender_thread(void *opaque)
@@ -358,6 +377,7 @@ static void simantic_pcie_proxy_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Sender thread for RTL-initiated DMA and interrupts */
     qemu_mutex_init(&s->dma_lock);
+    qemu_mutex_init(&s->main_tx_lock);
     s->running = true;
     qemu_thread_create(&s->sender_thread, "simantic-pcie-sender",
                        simantic_sender_thread, s, QEMU_THREAD_JOINABLE);
@@ -381,6 +401,7 @@ static void simantic_pcie_proxy_exit(PCIDevice *pci_dev)
     shutdown(s->sender_fd, SHUT_RDWR);
     qemu_thread_join(&s->sender_thread);
     qemu_mutex_destroy(&s->dma_lock);
+    qemu_mutex_destroy(&s->main_tx_lock);
 
     close(s->main_fd);
     close(s->sender_fd);
