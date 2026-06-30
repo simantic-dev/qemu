@@ -25,6 +25,7 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/thread.h"
+#include "qemu/rcu.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
@@ -97,7 +98,6 @@ struct SimanticPcieProxyState {
 
     QemuThread sender_thread;
     bool running;
-    QemuMutex dma_lock;         /* serialises pci_dma_read/write calls */
     QemuMutex main_tx_lock;     /* serialises main_fd writes (vCPU/timer vs sender thread) */
 
     /* device properties */
@@ -239,9 +239,15 @@ static const MemoryRegionOps simantic_bar0_ops = {
 static void simantic_handle_dma_write(SimanticPcieProxyState *s,
                                       uint64_t host_addr, uint32_t data)
 {
-    qemu_mutex_lock(&s->dma_lock);
-    pci_dma_write(&s->parent_obj, host_addr, &data, sizeof(data));
-    qemu_mutex_unlock(&s->dma_lock);
+    /* Run DMA-to-RAM off the BQL, under RCU — the same pattern QEMU's own
+     * virtio/nvme devices use for iothread DMA. This is what makes the design
+     * deadlock-safe by construction: the sender thread never contends for the
+     * BQL, so a vCPU blocked in a BAR access (holding the BQL) can never block
+     * this DMA. (Targets resolving to device MMIO rather than RAM would need
+     * the BQL; for AI-accel / NVMe / SmartNIC workloads DMA targets host RAM.) */
+    WITH_RCU_READ_LOCK_GUARD() {
+        pci_dma_write(&s->parent_obj, host_addr, &data, sizeof(data));
+    }
 
     /* The Verilated side reads pushConfirmation via receive(), which always
      * reads the MAIN socket (see socket_channel.cpp). So the confirmation must
@@ -262,9 +268,10 @@ static void simantic_handle_dma_read(SimanticPcieProxyState *s,
                                      uint64_t host_addr)
 {
     uint32_t data = 0;
-    qemu_mutex_lock(&s->dma_lock);
-    pci_dma_read(&s->parent_obj, host_addr, &data, sizeof(data));
-    qemu_mutex_unlock(&s->dma_lock);
+    /* Off-BQL under RCU — see simantic_handle_dma_write for rationale. */
+    WITH_RCU_READ_LOCK_GUARD() {
+        pci_dma_read(&s->parent_obj, host_addr, &data, sizeof(data));
+    }
 
     /* requestFromAgent() on the Verilated side reads the data via receive()
      * (MAIN socket) and expects ACTION_WRITE_REQUEST. Send on main_fd. */
@@ -375,8 +382,10 @@ static void simantic_pcie_proxy_realize(PCIDevice *pci_dev, Error **errp)
     }
     msix_vector_use(pci_dev, 0);
 
-    /* Sender thread for RTL-initiated DMA and interrupts */
-    qemu_mutex_init(&s->dma_lock);
+    /* Sender thread for RTL-initiated DMA and interrupts.
+     * DMA runs off-BQL under RCU (see simantic_handle_dma_write), so no
+     * dma serialisation lock is needed — the sender thread is the only caller
+     * and RAM access is RCU-protected. */
     qemu_mutex_init(&s->main_tx_lock);
     s->running = true;
     qemu_thread_create(&s->sender_thread, "simantic-pcie-sender",
@@ -400,7 +409,6 @@ static void simantic_pcie_proxy_exit(PCIDevice *pci_dev)
 
     shutdown(s->sender_fd, SHUT_RDWR);
     qemu_thread_join(&s->sender_thread);
-    qemu_mutex_destroy(&s->dma_lock);
     qemu_mutex_destroy(&s->main_tx_lock);
 
     close(s->main_fd);
