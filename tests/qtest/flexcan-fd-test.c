@@ -185,8 +185,8 @@ static void test_tx_rx_volume(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/flexcan/mcr-handshake", test_mcr_handshake);
-    qtest_add_func("/flexcan/tx-rx", test_tx_rx);
-    qtest_add_func("/flexcan/tx-rx-volume", test_tx_rx_volume);
+    qtest_add_func("/flexcan-fd/mcr-handshake", test_mcr_handshake);
+    qtest_add_func("/flexcan-fd/tx-rx", test_tx_rx);
+    qtest_add_func("/flexcan-fd/tx-rx-volume", test_tx_rx_volume);
     return g_test_run();
 }
