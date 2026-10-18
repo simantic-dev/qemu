@@ -18,6 +18,9 @@
 typedef struct SysemuCPUOps {
     /**
      * @has_work: Callback for checking if there is work to do.
+     *
+     * This function should be idempotent (i.e. not change state) as
+     * it will likely be queried multiple times before a CPU resumes.
      */
     bool (*has_work)(CPUState *cpu); /* MANDATORY NON-NULL */
     /**
@@ -39,20 +42,6 @@ typedef struct SysemuCPUOps {
      * for a complete target page or they use memory attributes).
      */
     hwaddr (*get_phys_addr_debug)(CPUState *cpu, vaddr addr);
-    /**
-     * @get_phys_addr_attrs_debug: Callback for obtaining a physical address
-     *       and the associated memory transaction attributes to use for the
-     *       access.
-     *
-     * This must be able to handle a non-page-aligned address, and will
-     * return the physical address corresponding to that address.
-     *
-     * CPUs should prefer to implement translate_for_debug instead of
-     * this (and must do so if their translations are not always valid
-     * for a complete target page).
-     */
-    hwaddr (*get_phys_addr_attrs_debug)(CPUState *cpu, vaddr addr,
-                                        MemTxAttrs *attrs);
     /**
      * @translate_for_debug: Callback for translating a virtual address into
      * a physical address for debug purposes.

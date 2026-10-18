@@ -136,7 +136,7 @@ config ROCKER
 config CAN_BUS
     bool
 
-config FLEXCAN
+config FLEXCAN_FD
     bool
     select CAN_BUS
 
@@ -164,3 +164,8 @@ config CAN_CTUCANFD_PCI
 
 config FSL_IMX93_DWMAC
     bool
+
+config CAN_FLEXCAN
+    bool
+    depends on IMX
+    select CAN_BUS

@@ -4,6 +4,11 @@
  * Copyright (c) 2025 Linaro Limited
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * The IRS is defined in IHI 111701
+ * (ARM Generic Interrupt Controller Architecture Specification,
+ * GIC architecture version 5):
+ * https://developer.arm.com/documentation/111701/latest
  */
 
 #include "qemu/osdep.h"
@@ -424,8 +429,7 @@ static void irs_recalc_hppi(GICv5 *s, GICv5Domain domain, uint32_t iaffid)
     ARMCPU *cpu = cpuidx >= 0 ? cs->cpus[cpuidx] : NULL;
     GICv5PendingIrq best;
 
-    best.intid = 0;
-    best.prio = PRIO_IDLE;
+    best = GICV5_PENDING_IRQ_NONE;
 
     if (!cpu) {
         /* Nothing happens for iaffids targeting nonexistent CPUs */
@@ -521,8 +525,7 @@ static void irs_recall_hppis(GICv5 *s, GICv5Domain domain)
     GICv5Common *cs = ARM_GICV5_COMMON(s);
 
     for (int i = 0; i < cs->num_cpus; i++) {
-        s->hppi[domain][i].intid = 0;
-        s->hppi[domain][i].prio = PRIO_IDLE;
+        s->hppi[domain][i] = GICV5_PENDING_IRQ_NONE;
         gicv5_forward_interrupt(cs->cpus[i], domain);
     }
 }
@@ -926,6 +929,7 @@ void gicv5_set_handling(GICv5Common *cs, uint32_t id,
         if (!spi) {
             qemu_log_mask(LOG_GUEST_ERROR, "gicv5_set_handling: tried to set "
                           "priority of unreachable SPI %d\n", id);
+            return;
         }
 
         spi->hm = handling;
@@ -1643,8 +1647,8 @@ static bool config_writel(GICv5 *s, GICv5Domain domain, hwaddr offset,
         if (spi) {
             spi_sample(spi);
             irs_recalc_hppi(s, spi->domain, spi->iaffid);
+            trace_gicv5_spi_state(id, spi->level, spi->pending, spi->active);
         }
-        trace_gicv5_spi_state(id, spi->level, spi->pending, spi->active);
         return true;
     }
     case A_IRS_CR0:

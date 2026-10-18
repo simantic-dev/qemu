@@ -32,7 +32,7 @@
 #include "hw/misc/imx93_ele.h"
 #include "hw/net/imx_fec.h"
 #include "hw/net/imx93_dwmac.h"
-#include "hw/net/flexcan.h"
+#include "hw/net/flexcan-fd.h"
 #include "net/can_emu.h"
 #include "hw/i2c/imx_lpi2c.h"
 #include "hw/gpio/imx93_gpio.h"
@@ -201,7 +201,7 @@ struct FslImx93State {
     IMX93DsiState   dsi;
     IMX93LcdifState lcdif;
     IMX93IsiState   isi;
-    FlexCanState    flexcan[FSL_IMX93_NUM_FLEXCAN];
+    FlexCanFdState    flexcan[FSL_IMX93_NUM_FLEXCAN];
     CanBusState     *canbus[FSL_IMX93_NUM_FLEXCAN];
     ChipideaState   usb[FSL_IMX93_NUM_USBS];
     IMX93SaiState   sai[FSL_IMX93_NUM_SAIS];

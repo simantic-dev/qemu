@@ -97,6 +97,9 @@ enum {
     VIRT_NVDIMM_ACPI,
     VIRT_PVTIME,
     VIRT_ACPI_PCIHP,
+    VIRT_GWDT_WS0,
+    VIRT_GWDT_REFRESH,
+    VIRT_GWDT_CONTROL,
     VIRT_LOWMEMMAP_LAST,
 };
 
@@ -207,6 +210,7 @@ struct VirtMachineState {
     MemoryRegion *sysmem;
     MemoryRegion *secure_sysmem;
     bool pci_preserve_config;
+    GPtrArray *smmuv3_devices;
 };
 
 #define VIRT_ECAM_ID(high) (high ? VIRT_HIGH_PCIE_ECAM : VIRT_PCIE_ECAM)

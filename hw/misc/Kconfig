@@ -275,6 +275,9 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config XLNX_ZYNQ_DDRC
+    bool
+
 source macio/Kconfig
 
 config IMX93_TMU

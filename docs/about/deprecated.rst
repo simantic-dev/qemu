@@ -61,6 +61,16 @@ The ``debug-threads`` option of the ``-name`` argument is now
 ignored. Thread naming is unconditionally enabled for all platforms
 where it is supported.
 
+``-mon`` option (since 11.1)
+''''''''''''''''''''''''''''
+
+The ``-mon`` option was the generic mechanism for creating monitor
+objects if the convenience ``-qmp`` or ``-monitor`` options were not
+flexible enough. The monitor objects have been converted to QOM, so
+``-mon mode=readline`` is replaced by ``-object monitor-hmp`` and
+``-mon mode=control`` is replaced by ``-object monitor-qmp``. The
+short convenience options are not deprecated, only ``-mon``.
+
 QEMU Machine Protocol (QMP) commands
 ------------------------------------
 
@@ -177,14 +187,6 @@ The ``info capture`` command is deprecated and will be removed in a future relea
 Host Architectures
 ------------------
 
-MIPS (since 10.2)
-'''''''''''''''''
-
-MIPS is not supported by Debian 13 ("Trixie") and newer, making it hard to
-maintain our cross-compilation CI tests of the architecture. As we no longer
-have CI coverage support may bitrot away before the deprecation process
-completes.
-
 TCG Plugin support not enabled by default with TCI (since 9.2)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -214,24 +216,6 @@ in the QEMU object model anymore. ``Sun-UltraSparc-IIIi+`` and
 but for consistency these will get removed in a future release, too.
 Use ``Sun-UltraSparc-IIIi-plus`` and ``Sun-UltraSparc-IV-plus`` instead.
 
-PPC 405 CPUs (since 10.0)
-'''''''''''''''''''''''''
-
-The PPC 405 CPU has no known users and the ``ref405ep`` machine was
-removed in QEMU 10.0. Since the IBM POWER [8-11] processors uses an
-embedded 405 for power management (OCC) and other internal tasks, it
-is theoretically possible to use QEMU to model them. Let's keep the
-CPU implementation for a while before removing all support.
-
-Power8E and Power8NVL CPUs and corresponding Pnv chips (since 10.1)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The Power8E and Power8NVL variants of Power8 are not really useful anymore
-in qemu, and are old and unmaintained now.
-
-The CPUs as well as corresponding Power8NVL and Power8E PnvChips will also
-be considered deprecated.
-
 System emulator machines
 ------------------------
 
@@ -250,24 +234,20 @@ deprecated; use the new name ``dtb-randomness`` instead. The new name
 better reflects the way this property affects all random data within
 the device tree blob, not just the ``kaslr-seed`` node.
 
+RISC-V Shakti machine (since 11.1)
+''''''''''''''''''''''''''''''''''
 
-RISC-V default machine option (since 10.0)
-''''''''''''''''''''''''''''''''''''''''''
+The RISC-V ``shakti_c`` machine hasn't had meaningful contributions since 2021
+and is currently unmaintained. The machine is scheduled to be removed as it
+appears to have no users.
 
-RISC-V defines ``spike`` as the default machine if no machine option is
-given in the command line.  This happens because ``spike`` is the first
-RISC-V machine implemented in QEMU and setting it as default was
-convenient at that time.  Now we have 7 riscv64 and 6 riscv32 machines
-and having ``spike`` as a default is no longer justified.  This default
-will also promote situations where users think they're running ``virt``
-(the most used RISC-V machine type in 10.0) when in fact they're
-running ``spike``.
+``memory-encryption`` machine property (since 11.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Removing the default machine option forces users to always set the machine
-they want to use and avoids confusion.  Existing users of the ``spike``
-machine must ensure that they're setting the ``spike`` machine in the
-command line (``-M spike``).
-
+Use ``confidential-guest-support`` instead. The ``memory-encryption`` object
+was an early implementation of memory encryption support in QEMU, but it has
+been superseded by the more comprehensive ``confidential-guest-support``
+object.
 
 Backend options
 ---------------
@@ -381,14 +361,6 @@ Specifying the iSCSI password in plain text on the command line using the
 ``password`` option is insecure. The ``password-secret`` option should be
 used instead, to refer to a ``--object secret...`` instance that provides
 a password via a file, or encrypted.
-
-``gluster`` backend (since 9.2)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-According to https://marc.info/?l=fedora-devel-list&m=171934833215726
-the GlusterFS development effectively ended. Unless the development
-gains momentum again, the QEMU project will remove the gluster backend
-in a future release.
 
 
 Character device options

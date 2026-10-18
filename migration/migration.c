@@ -63,6 +63,7 @@
 #include "system/dirtylimit.h"
 #include "qemu/sockets.h"
 #include "system/kvm.h"
+#include "math.h"
 
 #define NOTIFIER_ELEM_INIT(array, elem)    \
     [elem] = NOTIFIER_WITH_RETURN_LIST_INITIALIZER((array)[elem])
@@ -296,7 +297,7 @@ void migration_object_init(void)
 {
     /* This can only be called once. */
     assert(!current_migration);
-    current_migration = MIGRATION_OBJ(object_new(TYPE_MIGRATION));
+    current_migration = MIGRATION(object_new(TYPE_MIGRATION));
 
     /*
      * Init the migrate incoming object as well no matter whether
@@ -1029,7 +1030,7 @@ bool migration_is_running(void)
 
 static bool migration_is_active(void)
 {
-    MigrationState *s = current_migration;
+    MigrationState *s = migrate_get_current();
 
     return (s->state == MIGRATION_STATUS_ACTIVE ||
             s->state == MIGRATION_STATUS_POSTCOPY_DEVICE ||
@@ -1044,12 +1045,29 @@ static bool migrate_show_downtime(MigrationState *s)
 /* Return expected downtime (unit: milliseconds) */
 int64_t migration_downtime_calc_expected(MigrationState *s)
 {
+    double expected_ms;
+
     if (mig_stats.dirty_sync_count <= 1) {
         return migrate_downtime_limit();
     }
 
-    return mig_stats.dirty_bytes_last_sync /
+    expected_ms = mig_stats.dirty_bytes_last_sync /
         migration_get_switchover_bw(s) * 1000;
+
+    /*
+     * If we haven't been able to transfer any data, the result here could
+     * be NaN (for 0 / 0) or infinity (something else / 0).
+     *
+     * Return INT64_MAX as our best approximation to "this will take
+     * forever to complete". If the problem is transient (e.g. we just
+     * haven't started to transfer yet) we'll recalculate to a more
+     * accurate figure later.
+     */
+    if (isnan(expected_ms) || expected_ms >= (double)INT64_MAX) {
+        return INT64_MAX;
+    }
+
+    return (int64_t) expected_ms;
 }
 
 static void populate_time_info(MigrationInfo *info, MigrationState *s)
@@ -1502,14 +1520,19 @@ void migration_cancel(void)
     }
 
     /*
-     * If migration_connect_outgoing has not been called, then there
-     * is no path that will complete the cancellation. Do it now.
+     * This is cpr-transfer specific processing.
+     *
+     * If this is true, it means cpr-transfer migration is waiting for the
+     * destination to send HUP event on CPR channel to continue the next
+     * phase.  If so, do the cleanup proactively to avoid get stuck in
+     * CANCELLING state.
      */
-    if (setup && !s->to_dst_file) {
-        migrate_set_state(&s->state, MIGRATION_STATUS_CANCELLING,
-                          MIGRATION_STATUS_CANCELLED);
-        cpr_state_close();
-        cpr_transfer_source_destroy(s);
+    if (cpr_transfer_source_active(s)) {
+        assert(migrate_mode() == MIG_MODE_CPR_TRANSFER);
+        assert(setup && !s->to_dst_file);
+        migration_cleanup(s);
+        /* Now all things should have been released */
+        assert(!cpr_transfer_source_active(s));
     }
 }
 
@@ -1620,6 +1643,12 @@ bool migration_in_incoming_postcopy(void)
     return ps >= POSTCOPY_INCOMING_DISCARD && ps < POSTCOPY_INCOMING_END;
 }
 
+bool migration_guest_ram_loading(void)
+{
+    return runstate_check(RUN_STATE_INMIGRATE) ||
+           migration_in_incoming_postcopy();
+}
+
 bool migration_incoming_postcopy_advised(void)
 {
     PostcopyState ps = postcopy_state_get();
@@ -1634,7 +1663,7 @@ bool migration_in_bg_snapshot(void)
 
 bool migration_thread_is_self(void)
 {
-    MigrationState *s = current_migration;
+    MigrationState *s = migrate_get_current();
 
     return qemu_thread_is_self(&s->thread);
 }
@@ -1684,7 +1713,9 @@ int migrate_init(MigrationState *s, Error **errp)
     s->vm_old_state = -1;
     s->iteration_initial_bytes = 0;
     s->threshold_size = 0;
-    s->switchover_acked = false;
+    /* Legacy switchover-ack sends a single ACK for all devices */
+    qatomic_set(&s->switchover_ack_pending_num,
+                migrate_switchover_ack_legacy() ? 1 : 0);
     s->rdma_migration = false;
 
     /*
@@ -2045,12 +2076,22 @@ static gboolean migration_connect_outgoing_cb(QIOChannel *channel,
     MigrationState *s = migrate_get_current();
     Error *local_err = NULL;
 
+    /*
+     * Detach and release the GSource right after use.  We rely on this to
+     * detect this small cpr-transfer window of "waiting for HUP event".
+     */
+    cpr_transfer_source_destroy(s);
+
     migration_connect_outgoing(s, opaque, &local_err);
 
     if (local_err) {
         migration_connect_error_propagate(s, local_err);
     }
 
+    /*
+     * This is redundant as we do cpr_transfer_source_destroy() at the
+     * entry, but it's benign; glib will just skip the detach.
+     */
     return G_SOURCE_REMOVE;
 }
 
@@ -2161,6 +2202,21 @@ int migration_rp_wait(MigrationState *s)
 void migration_rp_kick(MigrationState *s)
 {
     qemu_sem_post(&s->rp_state.rp_sem);
+}
+
+/* This is called only on destination side */
+void migration_request_switchover_ack_legacy(const char *requester)
+{
+    MigrationIncomingState *mis = migration_incoming_get_current();
+
+    if (!migrate_switchover_ack() || !migrate_switchover_ack_legacy()) {
+        return;
+    }
+
+    mis->switchover_ack_pending_num_legacy++;
+
+    trace_migration_request_switchover_ack_legacy(
+        requester, mis->switchover_ack_pending_num_legacy);
 }
 
 static struct rp_cmd_args {
@@ -2409,9 +2465,18 @@ static void *source_return_path_thread(void *opaque)
             break;
 
         case MIG_RP_MSG_SWITCHOVER_ACK:
-            ms->switchover_acked = true;
-            trace_source_return_path_thread_switchover_acked();
+        {
+            uint32_t pending_num;
+
+            pending_num = qatomic_dec_fetch(&ms->switchover_ack_pending_num);
+            trace_source_return_path_thread_switchover_acked(pending_num);
+            if (pending_num == UINT32_MAX) {
+                error_setg(&err, "Switchover ack pending num underflowed");
+                goto out;
+            }
+
             break;
+        }
 
         default:
             break;
@@ -2594,8 +2659,7 @@ static int postcopy_start(MigrationState *ms, Error **errp)
      */
     qemu_savevm_send_postcopy_listen(fb);
 
-    ret = qemu_savevm_state_non_iterable(fb, errp);
-    if (ret) {
+    if (!qemu_savevm_state_non_iterable(fb, errp)) {
         error_prepend(errp, "Postcopy save non-iterable states failed: ");
         goto fail_closefb;
     }
@@ -2742,7 +2806,7 @@ static bool migration_switchover_prepare(MigrationState *s)
     bql_lock();
     /*
      * After BQL released and retaken, the state can be CANCELLING if it
-     * happend during sem_wait().. Only change the state if it's still
+     * happened during sem_wait().. Only change the state if it's still
      * pre-switchover.
      */
     migrate_set_state(&s->state, MIGRATION_STATUS_PRE_SWITCHOVER,
@@ -2754,9 +2818,21 @@ static bool migration_switchover_prepare(MigrationState *s)
 static bool migration_switchover_start(MigrationState *s, Error **errp)
 {
     ERRP_GUARD();
+    MigPendingData pending = {};
 
     if (!migration_switchover_prepare(s)) {
         error_setg(errp, "Switchover is interrupted");
+        return false;
+    }
+
+    /*
+     * The final query to the whole system on dirty data to make sure we
+     * collect the latest status of the VM.  For precopy, source QEMU will
+     * dump all the dirty data during switchover.  For postcopy, this will
+     * properly update all the dirty bitmaps to finally generate the
+     * correct discard bitmaps; see ram_postcopy_send_discard_bitmap().
+     */
+    if (!qemu_savevm_query_pending_final(s, &pending, errp)) {
         return false;
     }
 
@@ -2781,25 +2857,26 @@ static bool migration_switchover_start(MigrationState *s, Error **errp)
     return true;
 }
 
-static int migration_completion_precopy(MigrationState *s)
+static bool migration_completion_precopy(MigrationState *s, Error **errp)
 {
-    int ret;
+    bool ret = false;
 
     bql_lock();
 
     if (!migrate_mode_is_cpr()) {
-        ret = migration_stop_vm(s, RUN_STATE_FINISH_MIGRATE);
-        if (ret < 0) {
+        int r = migration_stop_vm(s, RUN_STATE_FINISH_MIGRATE);
+
+        if (r < 0) {
+            error_setg_errno(errp, -r, "Failed to stop the VM");
             goto out_unlock;
         }
     }
 
-    if (!migration_switchover_start(s, NULL)) {
-        ret = -EFAULT;
+    if (!migration_switchover_start(s, errp)) {
         goto out_unlock;
     }
 
-    ret = qemu_savevm_state_complete_precopy(s);
+    ret = qemu_savevm_state_complete_precopy(s, errp);
 out_unlock:
     bql_unlock();
     return ret;
@@ -2832,18 +2909,17 @@ static void migration_completion_postcopy(MigrationState *s)
  */
 static void migration_completion(MigrationState *s)
 {
-    int ret = 0;
     Error *local_err = NULL;
 
     if (s->state == MIGRATION_STATUS_ACTIVE) {
-        ret = migration_completion_precopy(s);
+        if (!migration_completion_precopy(s, &local_err)) {
+            goto fail;
+        }
     } else if (s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE) {
         migration_completion_postcopy(s);
     } else {
-        ret = -1;
-    }
-
-    if (ret < 0) {
+        error_setg(&local_err, "Unexpected migration completion status %s",
+                   MigrationStatus_str(s->state));
         goto fail;
     }
 
@@ -2867,10 +2943,7 @@ static void migration_completion(MigrationState *s)
     return;
 
 fail:
-    if (qemu_file_get_error_obj(s->to_dst_file, &local_err)) {
-        migrate_error_propagate(s, local_err);
-    } else if (ret) {
-        error_setg_errno(&local_err, -ret, "Error in migration completion");
+    if (local_err || qemu_file_get_error_obj(s->to_dst_file, &local_err)) {
         migrate_error_propagate(s, local_err);
     }
 
@@ -3062,7 +3135,7 @@ static MigThrError postcopy_pause(MigrationState *s)
 
 void migration_file_set_error(int ret, Error *err)
 {
-    MigrationState *s = current_migration;
+    MigrationState *s = migrate_get_current();
 
     WITH_QEMU_LOCK_GUARD(&s->qemu_file_lock) {
         if (s->to_dst_file) {
@@ -3205,7 +3278,7 @@ static bool migration_can_switchover(MigrationState *s)
         return true;
     }
 
-    return s->switchover_acked;
+    return qatomic_read(&s->switchover_ack_pending_num) == 0;
 }
 
 /* Migration thread iteration status */
@@ -3220,7 +3293,7 @@ static bool migration_iteration_next_ready(MigrationState *s,
                                            MigPendingData *pending)
 {
     /*
-     * If the estimated values already suggest us to switchover, mark this
+     * If the estimated values already suggest us to switch over, mark this
      * iteration finished, time to do a slow sync.
      */
     if (pending->total_bytes <= s->threshold_size) {
@@ -3244,12 +3317,13 @@ static bool migration_iteration_next_ready(MigrationState *s,
     return false;
 }
 
-static void migration_iteration_go_next(MigPendingData *pending)
+static void migration_iteration_go_next(MigrationState *s,
+                                        MigPendingData *pending)
 {
     /*
      * Do a slow sync first before boosting the iteration count.
      */
-    qemu_savevm_query_pending(pending, true);
+    qemu_savevm_query_pending_iter(s, pending, true);
 
     /*
      * Update the dirty information for the whole system for this
@@ -3295,12 +3369,12 @@ static MigIterateState migration_iteration_run(MigrationState *s)
     Error *local_err = NULL;
     bool in_postcopy = (s->state == MIGRATION_STATUS_POSTCOPY_DEVICE ||
                         s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE);
-    bool can_switchover = migration_can_switchover(s);
+    bool can_switchover;
     MigPendingData pending = { };
     bool complete_ready;
 
     /* Fast path - get the estimated amount of pending data */
-    qemu_savevm_query_pending(&pending, false);
+    qemu_savevm_query_pending_iter(s, &pending, false);
 
     if (in_postcopy) {
         /*
@@ -3341,8 +3415,11 @@ static MigIterateState migration_iteration_run(MigrationState *s)
          * during postcopy phase.
          */
         if (migration_iteration_next_ready(s, &pending)) {
-            migration_iteration_go_next(&pending);
+            migration_iteration_go_next(s, &pending);
         }
+
+        /* Check if we can switch over after qemu_savevm_query_pending() */
+        can_switchover = migration_can_switchover(s);
 
         /* Should we switch to postcopy now? */
         if (can_switchover && postcopy_should_start(s, &pending)) {
@@ -3779,7 +3856,7 @@ static void *bg_migration_thread(void *opaque)
         goto fail_with_bql;
     }
 
-    if (qemu_savevm_state_non_iterable(fb, &local_err)) {
+    if (!qemu_savevm_state_non_iterable(fb, &local_err)) {
         error_prepend(&local_err, "Failed to save non-iterable devices ");
         goto fail_with_bql;
     }
@@ -3942,7 +4019,7 @@ static void migration_class_init(ObjectClass *klass, const void *data)
 
 static void migration_instance_finalize(Object *obj)
 {
-    MigrationState *ms = MIGRATION_OBJ(obj);
+    MigrationState *ms = MIGRATION(obj);
 
     qapi_free_BitmapMigrationNodeAliasList(ms->parameters.block_bitmap_mapping);
     qapi_free_strList(ms->parameters.cpr_exec_command);
@@ -3960,7 +4037,7 @@ static void migration_instance_finalize(Object *obj)
 
 static void migration_instance_init(Object *obj)
 {
-    MigrationState *ms = MIGRATION_OBJ(obj);
+    MigrationState *ms = MIGRATION(obj);
 
     ms->state = MIGRATION_STATUS_NONE;
     ms->mbps = -1;
@@ -4007,7 +4084,6 @@ static const TypeInfo migration_type = {
      */
     .parent = TYPE_DEVICE,
     .class_init = migration_class_init,
-    .class_size = sizeof(MigrationClass),
     .instance_size = sizeof(MigrationState),
     .instance_init = migration_instance_init,
     .instance_finalize = migration_instance_finalize,

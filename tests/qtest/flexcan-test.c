@@ -1,192 +1,421 @@
 /*
- * QTest for the NXP FlexCAN controller model (on the i.MX 93 machine).
+ * QTests for FlexCAN CAN controller device model
  *
- * Copyright (c) 2026, Kyle Fox <kylefoxaustin@gmail.com>
+ * Copyright (c) 2025 Matyas Bobek <matyas.bobek@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Exercises the two driver-critical behaviours of hw/net/can/flexcan.c
- * without a kernel: the MCR freeze/halt/soft-reset ack handshake, and a
- * real frame TX from one FlexCAN to RX on a second FlexCAN sharing one
- * emulated CAN bus.
  */
 
 #include "qemu/osdep.h"
-#include "qemu/cutils.h"
 #include "libqtest-single.h"
 
-/* i.MX 93 FlexCAN1/FlexCAN2 register bases. */
-#define FC1   0x443a0000
-#define FC2   0x425b0000
+#include "hw/net/flexcan.h"
+#include "hw/net/can/flexcan_regs.h"
 
-/* Register offsets. */
-#define MCR       0x00
-#define IFLAG2    0x2c
-#define IFLAG1    0x30
-#define MB(i)     (0x80 + (i) * 16)   /* classic: 16-byte MBs, bank0 */
-#define MB_CS(i)  (MB(i) + 0)
-#define MB_ID(i)  (MB(i) + 4)
-#define MB_D0(i)  (MB(i) + 8)
-#define TX_MB     0x470               /* classic TX mailbox (index 63) */
+#define FSL_IMX6_CAN2_ADDR 0x02094000
+#define FSL_IMX6_CAN2_SIZE 0x4000
+#define FSL_IMX6_CAN1_ADDR 0x02090000
+#define FSL_IMX6_CAN1_SIZE 0x4000
 
-/* MCR bits. */
-#define MCR_MDIS     (1u << 31)
-#define MCR_FRZ      (1u << 30)
-#define MCR_HALT     (1u << 28)
-#define MCR_SOFTRST  (1u << 25)
-#define MCR_FRZ_ACK  (1u << 24)
-#define MCR_LPM_ACK  (1u << 20)
+#define FC_QEMU_ARGS "-nographic -M sabrelite " \
+                     "-object can-bus,id=qcan0  " \
+                     "-machine canbus0=qcan0 -machine canbus1=qcan0"
 
-/* MB CS CODE field. */
-#define CODE_RX_EMPTY  (0x4u << 24)
-#define CODE_RX_FULL   (0x2u << 24)
-#define CODE_TX_DATA   (0xcu << 24)
-#define CODE_MASK      (0xfu << 24)
+/* used for masking out unused/reserved bits */
+#define FC_MB_CNT_USED_MASK (~0xF080FFFFu)
 
-static void test_mcr_handshake(void)
+#define FCREG(BASE_ADDR, REG) ((BASE_ADDR) + offsetof(FlexcanRegs, REG))
+#define FCMB(BASE_ADDR, MB_IDX, WORD_IDX) (FCREG(BASE_ADDR, mbs) + \
+    0x10 * (MB_IDX) + 4 * (WORD_IDX))
+
+typedef struct FcTestFrame {
+    uint32_t id;
+    uint32_t data[2];
+    uint8_t len;
+    bool ide;
+    bool rtr;
+
+    /* rx only */
+    bool expect_overrun;
+} FcTestFrame;
+
+static const FcTestFrame fc_test_frame_1 = {
+    .id = 0x5AF,
+    .len = 8,
+    .data = {
+        0x01020304,
+        0x0A0B0C0D
+    },
+    .ide = false
+};
+
+static const FcTestFrame fc_test_frame_1_ide = {
+    .id = 0x105AF5AF,
+    .len = 8,
+    .data = {
+        0x01020304,
+        0x0A0B0C0D
+    },
+    .ide = true
+};
+
+static void fc_reset(hwaddr ba, uint32_t mcr_flags)
 {
-    QTestState *qts = qtest_init("-machine imx93-11x11-evk -accel qtest");
+    /* disable */
+    writel(FCREG(ba, mcr), 0xD890000F);
 
-    /* MDIS -> LPM_ACK tracks it (low-power enter/exit ack). */
-    qtest_writel(qts, FC1 + MCR, MCR_MDIS);
-    g_assert_true(qtest_readl(qts, FC1 + MCR) & MCR_LPM_ACK);
-    qtest_writel(qts, FC1 + MCR, 0);
-    g_assert_false(qtest_readl(qts, FC1 + MCR) & MCR_LPM_ACK);
+    /* enable in freeze mode */
+    writel(FCREG(ba, mcr), 0x5980000F);
 
-    /* SOFTRST is self-clearing. */
-    qtest_writel(qts, FC1 + MCR, MCR_SOFTRST);
-    g_assert_false(qtest_readl(qts, FC1 + MCR) & MCR_SOFTRST);
+    /* soft reset */
+    writel(FCREG(ba, mcr), 0x5980000F | FLEXCAN_MCR_SOFTRST);
 
-    /* FRZ+HALT -> FRZ_ACK set; clearing HALT -> FRZ_ACK clears. */
-    qtest_writel(qts, FC1 + MCR, MCR_FRZ | MCR_HALT);
-    g_assert_true(qtest_readl(qts, FC1 + MCR) & MCR_FRZ_ACK);
-    qtest_writel(qts, FC1 + MCR, MCR_FRZ);
-    g_assert_false(qtest_readl(qts, FC1 + MCR) & MCR_FRZ_ACK);
+    g_assert_cmpuint(readl(FCREG(ba, mcr)), ==, 0x5980000F);
+    g_assert_cmpuint(readl(FCREG(ba, ctrl)), ==, 0);
+    g_assert_cmpuint(readl(FCREG(ba, ctrl2)), ==, 0);
 
-    qtest_quit(qts);
+    writel(FCREG(ba, mcr), (0x5980000F & ~FLEXCAN_MCR_HALT) | mcr_flags);
+    writel(FCREG(ba, ctrl2), FLEXCAN_CTRL2_RRS);
+
+    /* initialize all mailboxes as rx inactive */
+    for (int i = 0; i < FLEXCAN_MAILBOX_COUNT; i++) {
+        writel(FCMB(ba, i, 0), FLEXCAN_MB_CODE_RX_INACTIVE);
+        writel(FCMB(ba, i, 1), 0);
+        writel(FCMB(ba, i, 2), 0);
+        writel(FCMB(ba, i, 3), 0);
+    }
 }
 
-static void test_tx_rx(void)
+static uint64_t fc_get_irqs(hwaddr ba)
 {
-    /* Put FlexCAN1 and FlexCAN2 on the same emulated CAN bus. */
-    QTestState *qts = qtest_init("-machine imx93-11x11-evk -accel qtest "
-                                 "-object can-bus,id=cb "
-                                 "-machine canbus0=cb,canbus1=cb");
-    uint32_t cs, id, d0;
-
-    /*
-     * Enable both controllers: MCR=0 clears MDIS and exits freeze. A
-     * disabled/frozen FlexCAN neither transmits nor receives (as on silicon),
-     * so the bus is idle until firmware brings the module out of reset.
-     */
-    qtest_writel(qts, FC1 + MCR, 0);
-    qtest_writel(qts, FC2 + MCR, 0);
-
-    /* Receiver: arm RX mailbox 1 as EMPTY. */
-    qtest_writel(qts, FC2 + MB_CS(1), CODE_RX_EMPTY);
-
-    /* Sender: standard ID 0x123, 4 data bytes 0xDEADBEEF; CS write fires TX. */
-    qtest_writel(qts, FC1 + TX_MB + 8, 0xdeadbeef);
-    qtest_writel(qts, FC1 + TX_MB + 4, 0x123u << 18);
-    qtest_writel(qts, FC1 + TX_MB + 0, CODE_TX_DATA | (4u << 16));
-
-    /* Sender latched its TX-complete flag (TX mailbox 63 -> IFLAG2 bit 31). */
-    g_assert_true(qtest_readl(qts, FC1 + IFLAG2) & (1u << 31));
-
-    /* Receiver got it in mailbox 1: IFLAG1 bit 1, CODE=RX_FULL, id+data. */
-    g_assert_true(qtest_readl(qts, FC2 + IFLAG1) & (1u << 1));
-    cs = qtest_readl(qts, FC2 + MB_CS(1));
-    g_assert_cmphex(cs & CODE_MASK, ==, CODE_RX_FULL);
-    id = qtest_readl(qts, FC2 + MB_ID(1));
-    g_assert_cmphex((id >> 18) & 0x7ff, ==, 0x123);
-    d0 = qtest_readl(qts, FC2 + MB_D0(1));
-    g_assert_cmphex(d0, ==, 0xdeadbeef);
-
-    /* Clearing the RX flag (W1C) re-arms the mailbox to EMPTY. */
-    qtest_writel(qts, FC2 + IFLAG1, 1u << 1);
-    g_assert_false(qtest_readl(qts, FC2 + IFLAG1) & (1u << 1));
-    g_assert_cmphex(qtest_readl(qts, FC2 + MB_CS(1)) & CODE_MASK, ==,
-                    CODE_RX_EMPTY);
-
-    qtest_quit(qts);
+    return (uint64_t)readl(FCREG(ba, iflag1)) |
+        ((uint64_t)readl(FCREG(ba, iflag2)) << 32);
 }
 
-/*
- * High-volume TX->RX: blast many frames FC1 -> FC2 through the shared CAN bus,
- * each with a distinct ID and payload, re-arming the RX mailbox (W1C clear)
- * between frames. Verify every frame arrives intact, in order, with no loss or
- * corruption across the run. This stresses the mailbox handoff + W1C re-arm
- * path at volume - the FlexCAN analog of a sustained-traffic test (FlexCAN is
- * mailbox-based with no DMA ring, so there is no index to wrap; the risk this
- * guards is a stuck flag or a stale mailbox after many back-to-back frames).
- *
- * Count is configurable via FLEXCAN_STRESS_FRAMES (default 1000, CI-fast).
- */
-static void test_tx_rx_volume(void)
+static void fc_clear_irq(hwaddr ba, int idx)
 {
-    QTestState *qts = qtest_init("-machine imx93-11x11-evk -accel qtest "
-                                 "-object can-bus,id=cb "
-                                 "-machine canbus0=cb,canbus1=cb");
-    const char *env = getenv("FLEXCAN_STRESS_FRAMES");
-    unsigned long n = 1000;
-    unsigned long f;
-
-    if (env) {
-        qemu_strtoul(env, NULL, 10, &n);
+    if (idx >= 32) {
+        writel(FCREG(ba, iflag2), (uint32_t)1 << (idx - 32));
+    } else {
+        writel(FCREG(ba, iflag1), (uint32_t)1 << idx);
     }
 
-    /* Enable both controllers (clear MDIS + exit freeze) before any traffic. */
-    qtest_writel(qts, FC1 + MCR, 0);
-    qtest_writel(qts, FC2 + MCR, 0);
+    g_assert_cmpuint(fc_get_irqs(ba) & ((uint64_t)1 << idx), ==, 0);
+}
 
-    /* Arm RX mailbox 1 as EMPTY once; we re-arm it via W1C after each frame. */
-    qtest_writel(qts, FC2 + MB_CS(1), CODE_RX_EMPTY);
+static void fc_setup_rx_mb(hwaddr ba, int mbidx)
+{
+    writel(FCMB(ba, mbidx, 0), FLEXCAN_MB_CODE_RX_EMPTY);
+    writel(FCMB(ba, mbidx, 1), 0);
+    /* the data value should be ignored for RX mb */
+    writel(FCMB(ba, mbidx, 2), 0);
+    writel(FCMB(ba, mbidx, 3), 0);
 
-    for (f = 0; f < n; f++) {
-        uint32_t can_id = 0x100 + (f & 0x6ff);  /* 11-bit standard ID */
-        uint32_t payload = 0xc0000000u ^ (uint32_t)(f * 2654435761u);
-        uint32_t cs, id, d0;
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 0)), ==, FLEXCAN_MB_CODE_RX_EMPTY);
+}
 
-        /* Sender: distinct ID + payload; CS write fires the TX. */
-        qtest_writel(qts, FC1 + TX_MB + 8, payload);
-        qtest_writel(qts, FC1 + TX_MB + 4, can_id << 18);
-        qtest_writel(qts, FC1 + TX_MB + 0, CODE_TX_DATA | (4u << 16));
+static void fc_tx(hwaddr ba, int mbidx, const FcTestFrame *frame)
+{
+    g_assert_cmpuint(frame->len, <=, 8);
 
-        /* Sender TX-complete flag set. */
-        g_assert_true(qtest_readl(qts, FC1 + IFLAG2) & (1u << 31));
-        /* clear it for the next iteration (W1C) */
-        qtest_writel(qts, FC1 + IFLAG2, 1u << 31);
+    writel(FCMB(ba, mbidx, 0), FLEXCAN_MB_CODE_TX_INACTIVE);
+    uint32_t id = frame->ide ? frame->id : frame->id << 18;
+    writel(FCMB(ba, mbidx, 1), id);
+    writel(FCMB(ba, mbidx, 2), frame->data[0]);
+    writel(FCMB(ba, mbidx, 3), frame->data[1]);
 
-        /* Receiver got exactly this frame. */
-        if (!(qtest_readl(qts, FC2 + IFLAG1) & (1u << 1))) {
-            g_test_message("frame %lu: RX flag not set (frame lost)", f);
-            g_assert_not_reached();
-        }
-        cs = qtest_readl(qts, FC2 + MB_CS(1));
-        g_assert_cmphex(cs & CODE_MASK, ==, CODE_RX_FULL);
-        id = qtest_readl(qts, FC2 + MB_ID(1));
-        d0 = qtest_readl(qts, FC2 + MB_D0(1));
-        if (((id >> 18) & 0x7ff) != can_id || d0 != payload) {
-            g_test_message("frame %lu: id/payload mismatch "
-                           "(got id 0x%x data 0x%x, want id 0x%x data 0x%x)",
-                           f, (id >> 18) & 0x7ff, d0, can_id, payload);
-            g_assert_not_reached();
-        }
+    uint32_t ctrl = FLEXCAN_MB_CODE_TX_DATA | FLEXCAN_MB_CNT_LENGTH(frame->len);
+    if (frame->ide) {
+        ctrl |= FLEXCAN_MB_CNT_IDE | FLEXCAN_MB_CNT_SRR;
+    }
+    if (frame->rtr) {
+        ctrl |= FLEXCAN_MB_CNT_RTR;
+    }
+    writel(FCMB(ba, mbidx, 0), ctrl);
 
-        /* Re-arm: W1C the RX flag, mailbox returns to EMPTY for the next. */
-        qtest_writel(qts, FC2 + IFLAG1, 1u << 1);
-        g_assert_cmphex(qtest_readl(qts, FC2 + MB_CS(1)) & CODE_MASK, ==,
-                        CODE_RX_EMPTY);
+    /* check frame was transmitted */
+    g_assert_cmpuint(fc_get_irqs(ba) & ((uint64_t)1 << mbidx),
+                     !=, 0);
+
+    uint32_t xpectd_ctrl = (ctrl & ~FLEXCAN_MB_CODE_MASK) |
+        FLEXCAN_MB_CODE_TX_INACTIVE;
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 0)) & FC_MB_CNT_USED_MASK, ==,
+                     xpectd_ctrl);
+    /* other fields should stay unchanged */
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 1)), ==, id);
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 2)), ==, frame->data[0]);
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 3)), ==, frame->data[1]);
+}
+
+static void fc_rx_check(hwaddr ba, int mbidx, const FcTestFrame *frame)
+{
+    uint32_t xpectd_ctrl = frame->expect_overrun ? FLEXCAN_MB_CODE_RX_OVERRUN
+                             : FLEXCAN_MB_CODE_RX_FULL;
+    xpectd_ctrl |= FLEXCAN_MB_CNT_LENGTH(frame->len) | FLEXCAN_MB_CNT_SRR;
+    if (frame->ide) {
+        xpectd_ctrl |= FLEXCAN_MB_CNT_IDE;
+    }
+    if (frame->rtr) {
+        xpectd_ctrl |= FLEXCAN_MB_CNT_RTR;
     }
 
-    qtest_quit(qts);
+    uint32_t xpectd_id = frame->ide ? frame->id : frame->id << 18;
+
+    uint32_t ctrl = readl(FCMB(ba, mbidx, 0)) & FC_MB_CNT_USED_MASK;
+    if ((ctrl & FLEXCAN_MB_CODE_MASK) == FLEXCAN_MB_CODE_RX_EMPTY) {
+        fprintf(stderr, "expected frame (id=0x%X) not received\n", frame->id);
+    }
+
+    g_assert_cmpuint(ctrl, ==, xpectd_ctrl);
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 1)), ==, xpectd_id);
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 2)), ==, frame->data[0]);
+    g_assert_cmpuint(readl(FCMB(ba, mbidx, 3)), ==, frame->data[1]);
+}
+
+static void fc_check_empty_multi(hwaddr ba, int idx_count, int mbidxs[])
+{
+    for (int i = 0; i < FLEXCAN_MAILBOX_COUNT; i++) {
+        bool check_empty = true;
+        int ctrl = readl(FCMB(ba, i, 0));
+
+        for (int j = 0; j < idx_count; j++) {
+            if (i == mbidxs[j]) {
+                check_empty = false;
+            }
+        }
+
+        if (check_empty) {
+            if (!(ctrl == FLEXCAN_MB_CODE_RX_EMPTY ||
+                  ctrl == FLEXCAN_MB_CODE_RX_INACTIVE)) {
+                g_assert_cmpuint(ctrl, ==, FLEXCAN_MB_CODE_RX_INACTIVE);
+            }
+            g_assert_cmpuint(readl(FCMB(ba, i, 1)), ==, 0);
+            g_assert_cmpuint(readl(FCMB(ba, i, 2)), ==, 0);
+            g_assert_cmpuint(readl(FCMB(ba, i, 3)), ==, 0);
+        } else {
+            g_assert_cmpuint(
+                ctrl & FLEXCAN_MB_CODE_MASK, !=,
+                FLEXCAN_MB_CODE_RX_INACTIVE
+            );
+        }
+    }
+}
+
+static void fc_check_empty(hwaddr ba, int mbidx)
+{
+    fc_check_empty_multi(ba, 1, &mbidx);
+}
+
+static void flexcan_test_linux_probe_impl(hwaddr fba)
+{
+    /* -- test a Linux driver-like probe sequence -- */
+    /* disable */
+    writel(FCREG(fba, mcr), 0xD890000F);
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xD890000F);
+    g_assert_cmpuint(readl(FCREG(fba, ctrl)), ==, 0);
+
+    /* set bit in reserved field we do not implement (CTRL_CLK_SRC) */
+    writel(FCREG(fba, ctrl), 0x00002000);
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xD890000F);
+
+    /* enable in freeze mode */
+    writel(FCREG(fba, mcr), 0x5980000F);
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x5980000F);
+
+    /* enable Rx-FIFO */
+    writel(FCREG(fba, mcr), 0x7980000F);
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x7980000F);
+    g_assert_cmpuint(readl(FCREG(fba, ecr)), ==, 0);
+
+    /* disable */
+    writel(FCREG(fba, mcr), 0xF890000F);
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xF890000F);
+}
+
+static void flexcan_test_freeze_disable_interaction_impl(hwaddr fba)
+{
+    /* -- test normal <=> freeze <=> disable transitions -- */
+
+    /* leave freeze in disabled, FRZ_ACK should stay cleared */
+    writel(FCREG(fba, mcr), 0xF890000F); /* disable */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xF890000F);
+    writel(FCREG(fba, mcr), 0xB890000F);  /* by clearing FRZ */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xB890000F);
+
+    writel(FCREG(fba, mcr), 0xF890000F); /* disable */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xF890000F);
+    writel(FCREG(fba, mcr), 0xE890000F);  /* by clearing HALT */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xE890000F);
+
+    writel(FCREG(fba, mcr), 0xF890000F); /* disable */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xF890000F);
+    writel(FCREG(fba, mcr), 0xA890000F);  /* by clearing both */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0xA890000F);
+
+    /* enter and leave freeze */
+    writel(FCREG(fba, mcr), 0x7980000F); /* enable in freeze mode */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x7980000F);
+    writel(FCREG(fba, mcr), 0x3980000F); /* leave by clearing FRZ */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x3080000F);
+
+    writel(FCREG(fba, mcr), 0x7980000F); /* enable in freeze mode */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x7980000F);
+    writel(FCREG(fba, mcr), 0x6980000F); /* leave by clearing HALT */
+    g_assert_cmpuint(readl(FCREG(fba, mcr)), ==, 0x6080000F);
+}
+
+static void flexcan_test_mailbox_io_impl(hwaddr ba_tx, hwaddr ba_rx)
+{
+    /* -- test correct handling of mailbox IO -- */
+    const int test_1_mbidx = 0;
+    fc_reset(ba_tx,
+             FLEXCAN_MCR_SRX_DIS | FLEXCAN_MCR_MAXMB(FLEXCAN_MAILBOX_COUNT));
+    fc_reset(ba_rx,
+             FLEXCAN_MCR_SRX_DIS | FLEXCAN_MCR_MAXMB(FLEXCAN_MAILBOX_COUNT));
+
+    fc_setup_rx_mb(ba_rx, test_1_mbidx);
+    fc_tx(ba_tx, test_1_mbidx, &fc_test_frame_1_ide);
+    g_assert_cmpuint(fc_get_irqs(ba_rx), ==, 1 << test_1_mbidx);
+    fc_rx_check(ba_rx, test_1_mbidx, &fc_test_frame_1_ide);
+    readl(FCREG(ba_rx, timer)); /* reset lock */
+
+    writel(FCMB(ba_rx, test_1_mbidx, 0), 0);
+    g_assert_cmpuint(readl(FCMB(ba_rx, test_1_mbidx, 0)), ==, 0);
+    writel(FCMB(ba_rx, test_1_mbidx, 1), 0x99AABBCC);
+    g_assert_cmpuint(readl(FCMB(ba_rx, test_1_mbidx, 1)), ==, 0x99AABBCC);
+}
+
+static void flexcan_test_dual_transmit_receive_impl(hwaddr ba_tx, hwaddr ba_rx)
+{
+    /* -- test TX and RX between the two FlexCAN instances -- */
+    const int test_1_mbidx = 50;
+    const int test_rounds = 50;
+
+    /* self-receive enabled on tx FC */
+    fc_reset(ba_tx,
+             FLEXCAN_MCR_MAXMB(FLEXCAN_MAILBOX_COUNT));
+    fc_reset(ba_rx,
+             FLEXCAN_MCR_SRX_DIS | FLEXCAN_MCR_MAXMB(FLEXCAN_MAILBOX_COUNT));
+
+    /* tests self-receive on tx and reception on rx */
+    fc_setup_rx_mb(ba_rx, test_1_mbidx);
+    fc_check_empty(ba_rx, test_1_mbidx);
+    fc_setup_rx_mb(ba_tx, test_1_mbidx + 1);
+    fc_check_empty(ba_tx, test_1_mbidx + 1);
+    g_assert_cmpuint(fc_get_irqs(ba_rx), ==, 0);
+    g_assert_cmpuint(fc_get_irqs(ba_tx), ==, 0);
+
+    fc_tx(ba_tx, test_1_mbidx, &fc_test_frame_1);
+    fc_clear_irq(ba_tx, test_1_mbidx);
+
+    fc_rx_check(ba_rx, test_1_mbidx, &fc_test_frame_1);
+    fc_check_empty(ba_rx, test_1_mbidx);
+    fc_rx_check(ba_tx, test_1_mbidx + 1, &fc_test_frame_1);
+    int tx_non_empty_mbidxs[] = {test_1_mbidx, test_1_mbidx + 1};
+
+    fc_check_empty_multi(ba_tx, 2, tx_non_empty_mbidxs);
+    fc_clear_irq(ba_rx, test_1_mbidx);
+    fc_clear_irq(ba_tx, test_1_mbidx + 1);
+    readl(FCREG(ba_rx, timer)); /* reset lock */
+
+    for (int ridx = 0; ridx < test_rounds; ridx++) {
+        /* test extended IDs sent to all mailboxes */
+        for (int i = 0; i < FLEXCAN_MAILBOX_COUNT; i++) {
+            fc_setup_rx_mb(ba_rx, i);
+        }
+        fc_check_empty_multi(ba_rx, 0, NULL);
+        g_assert_cmpuint(fc_get_irqs(ba_rx), ==, 0);
+        g_assert_cmpuint(fc_get_irqs(ba_tx), ==, 0);
+
+        for (int i = 0; i < FLEXCAN_MAILBOX_COUNT; i++) {
+            fc_tx(ba_tx, i, &fc_test_frame_1_ide);
+        }
+        g_assert_cmpuint(fc_get_irqs(ba_rx), ==, UINT64_MAX);
+        g_assert_cmpuint(fc_get_irqs(ba_tx), ==, UINT64_MAX);
+        for (int i = 0; i < FLEXCAN_MAILBOX_COUNT; i++) {
+            fc_rx_check(ba_rx, i, &fc_test_frame_1_ide);
+        }
+
+        /* reset interrupts */
+        writel(FCREG(ba_rx, iflag1), UINT32_MAX);
+        writel(FCREG(ba_rx, iflag2), UINT32_MAX);
+        writel(FCREG(ba_tx, iflag1), UINT32_MAX);
+        writel(FCREG(ba_tx, iflag2), UINT32_MAX);
+        g_assert_cmpuint(fc_get_irqs(ba_rx), ==, 0);
+        g_assert_cmpuint(fc_get_irqs(ba_tx), ==, 0);
+    }
+}
+
+static void flexcan_test_tx_abort_impl(hwaddr ba)
+{
+    /* -- test the TX abort feature -- */
+    fc_reset(ba,
+             FLEXCAN_MCR_SRX_DIS | FLEXCAN_MCR_MAXMB(FLEXCAN_MAILBOX_COUNT));
+
+
+    for (int mbidx = 0; mbidx < FLEXCAN_MAILBOX_COUNT; mbidx++) {
+        fc_tx(ba, mbidx, &fc_test_frame_1);
+
+        writel(FCMB(ba, mbidx, 0), FLEXCAN_MB_CODE_TX_ABORT);
+        g_assert_cmpuint(readl(FCMB(ba, mbidx, 0)), ==,
+                         FLEXCAN_MB_CODE_TX_INACTIVE);
+    }
+}
+
+static void flexcan_test_freeze_disable_interaction(void)
+{
+    qtest_start(FC_QEMU_ARGS);
+    flexcan_test_freeze_disable_interaction_impl(FSL_IMX6_CAN1_ADDR);
+    flexcan_test_freeze_disable_interaction_impl(FSL_IMX6_CAN2_ADDR);
+    qtest_end();
+}
+
+static void flexcan_test_linux_probe(void)
+{
+    qtest_start(FC_QEMU_ARGS);
+    flexcan_test_linux_probe_impl(FSL_IMX6_CAN1_ADDR);
+    flexcan_test_linux_probe_impl(FSL_IMX6_CAN2_ADDR);
+    qtest_end();
+}
+
+static void flexcan_test_dual_transmit_receive(void)
+{
+    qtest_start(FC_QEMU_ARGS);
+    flexcan_test_dual_transmit_receive_impl(FSL_IMX6_CAN1_ADDR,
+                                            FSL_IMX6_CAN2_ADDR);
+    flexcan_test_dual_transmit_receive_impl(FSL_IMX6_CAN2_ADDR,
+                                            FSL_IMX6_CAN1_ADDR);
+    qtest_end();
+}
+
+static void flexcan_test_tx_abort(void)
+{
+    qtest_start(FC_QEMU_ARGS);
+    flexcan_test_tx_abort_impl(FSL_IMX6_CAN1_ADDR);
+    flexcan_test_tx_abort_impl(FSL_IMX6_CAN2_ADDR);
+    qtest_end();
+}
+
+static void flexcan_test_mailbox_io(void)
+{
+    qtest_start(FC_QEMU_ARGS);
+    flexcan_test_mailbox_io_impl(FSL_IMX6_CAN1_ADDR, FSL_IMX6_CAN2_ADDR);
+    flexcan_test_mailbox_io_impl(FSL_IMX6_CAN2_ADDR, FSL_IMX6_CAN1_ADDR);
+    qtest_end();
 }
 
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/flexcan/mcr-handshake", test_mcr_handshake);
-    qtest_add_func("/flexcan/tx-rx", test_tx_rx);
-    qtest_add_func("/flexcan/tx-rx-volume", test_tx_rx_volume);
+
+    qtest_add_func("/net/flexcan/linux_probe", flexcan_test_linux_probe);
+    qtest_add_func("/net/flexcan/freeze_disable_interaction",
+                   flexcan_test_freeze_disable_interaction);
+    qtest_add_func("/net/flexcan/dual_transmit_receive",
+                   flexcan_test_dual_transmit_receive);
+    qtest_add_func("/net/flexcan/tx_abort",
+                   flexcan_test_tx_abort);
+    qtest_add_func("/net/flexcan/mailbox_io", flexcan_test_mailbox_io);
+
     return g_test_run();
 }

@@ -1128,16 +1128,6 @@ static void qemu_chr_socket_connected(QIOTask *task, void *opaque)
 
     if (qio_task_propagate_error(task, &err)) {
         tcp_chr_change_state(s, TCP_CHARDEV_STATE_DISCONNECTED);
-        /*
-         * The yank function is registered (against the connected channel) only
-         * on a *successful* connect, in tcp_chr_new_client() below. A failed
-         * connect attempt never registered this sioc, so there is nothing to
-         * unregister here - and yank_unregister_function() aborts() when asked
-         * to remove a function it cannot find. Unregistering of a previously
-         * connected channel is handled by the disconnect path. (A reconnecting
-         * client whose attempt errors - e.g. a flapping peer - otherwise
-         * crashes QEMU here.)
-         */
         check_report_connect_error(chr, err);
         goto cleanup;
     }
@@ -1534,6 +1524,10 @@ char_socket_get_addr(Object *obj, Visitor *v, const char *name,
 {
     SocketChardev *s = SOCKET_CHARDEV(obj);
 
+    if (!s->addr) {
+        error_setg(errp, "socket not connected");
+        return;
+    }
     visit_type_SocketAddress(v, name, &s->addr, errp);
 }
 

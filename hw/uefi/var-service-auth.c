@@ -194,7 +194,7 @@ static efi_status uefi_vars_check_auth_2_sb(uefi_vars_state *uv,
         return EFI_SUCCESS;
     }
 
-    if (auth.hdr_length == 24) {
+    if (auth.hdr_length == (sizeof(auth) - sizeof(auth.timestamp))) {
         /* no signature (auth->cert_data is empty) */
         return EFI_SECURITY_VIOLATION;
     }
@@ -228,6 +228,9 @@ efi_status uefi_vars_check_auth_2(uefi_vars_state *uv, uefi_variable *var,
     }
     memcpy(&auth, data, sizeof(auth));
 
+    if (auth.hdr_length < (sizeof(auth) - sizeof(auth.timestamp))) {
+        return EFI_SECURITY_VIOLATION;
+    }
     if (uadd64_overflow(sizeof(efi_time), auth.hdr_length, &data_offset)) {
         return EFI_SECURITY_VIOLATION;
     }
@@ -292,6 +295,13 @@ efi_status uefi_vars_check_secure_boot(uefi_vars_state *uv, uefi_variable *var)
         uefi_str_equal(var->name, var->name_size,
                        name_custom_mode, sizeof(name_custom_mode)) &&
         uv->disable_custom_mode) {
+        return EFI_WRITE_PROTECTED;
+    }
+
+    /* reject SetupMode updates */
+    if (qemu_uuid_is_equal(&var->guid, &EfiGlobalVariable) &&
+        uefi_str_equal(var->name, var->name_size,
+                       name_setup_mode, sizeof(name_setup_mode))) {
         return EFI_WRITE_PROTECTED;
     }
 

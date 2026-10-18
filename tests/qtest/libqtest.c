@@ -460,7 +460,7 @@ gchar *qtest_qemu_args(const char *extra_args)
                       "-qtest unix:%s "
                       "-qtest-log %s "
                       "-chardev socket,path=%s,id=char0 "
-                      "-mon chardev=char0,mode=control "
+                      "-object monitor-qmp,id=qmp0,chardev=char0 "
                       "-display none "
                       "-audio none "
                       "%s "
@@ -1134,6 +1134,12 @@ bool qtest_get_irq(QTestState *s, int num)
 void qtest_module_load(QTestState *s, const char *prefix, const char *libname)
 {
     qtest_sendf(s, "module_load %s %s\n", prefix, libname);
+    qtest_rsp(s);
+}
+
+void qtest_qom_tests(QTestState *s)
+{
+    qtest_sendf(s, "qom-tests\n");
     qtest_rsp(s);
 }
 
@@ -2146,7 +2152,7 @@ bool mkimg(const char *file, const char *fmt, unsigned size_mb)
 bool qtest_verbose(const char *domain)
 {
     const char *log = getenv("QTEST_LOG");
-    char *found;
+    const char *found;
 
     assert(domain);
 
