@@ -1499,7 +1499,7 @@ static void fsl_imx93_init(Object *obj)
 
     for (i = 0; i < FSL_IMX93_NUM_FLEXCAN; i++) {
         g_autofree char *name = g_strdup_printf("flexcan%d", i + 1);
-        object_initialize_child(obj, name, &s->flexcan[i], TYPE_FLEXCAN);
+        object_initialize_child(obj, name, &s->flexcan[i], TYPE_FLEXCAN_FD);
     }
 
     for (i = 0; i < FSL_IMX93_NUM_USBS; i++) {

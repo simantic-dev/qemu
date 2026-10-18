@@ -507,7 +507,7 @@ static const MemoryRegionOps flexcan_ops = {
 
 static void flexcan_reset_hold(Object *obj, ResetType type)
 {
-    FlexCanFdState *s = FLEXCAN(obj);
+    FlexCanFdState *s = FLEXCAN_FD(obj);
 
     memset(s->regs, 0, sizeof(s->regs));
     /* Post-reset: enabled + frozen, SUPV set, 16 mailboxes (RM MCR value). */
@@ -517,10 +517,10 @@ static void flexcan_reset_hold(Object *obj, ResetType type)
 
 static void flexcan_realize(DeviceState *dev, Error **errp)
 {
-    FlexCanFdState *s = FLEXCAN(dev);
+    FlexCanFdState *s = FLEXCAN_FD(dev);
 
     memory_region_init_io(&s->iomem, OBJECT(dev), &flexcan_ops, s,
-                          TYPE_FLEXCAN, FLEXCAN_FD_MEM_SIZE);
+                          TYPE_FLEXCAN_FD, FLEXCAN_FD_MEM_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 
@@ -534,7 +534,7 @@ static void flexcan_realize(DeviceState *dev, Error **errp)
 }
 
 static const VMStateDescription vmstate_flexcan = {
-    .name = TYPE_FLEXCAN,
+    .name = TYPE_FLEXCAN_FD,
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
@@ -562,7 +562,7 @@ static void flexcan_class_init(ObjectClass *klass, const void *data)
 }
 
 static const TypeInfo flexcan_info = {
-    .name = TYPE_FLEXCAN,
+    .name = TYPE_FLEXCAN_FD,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(FlexCanFdState),
     .class_init = flexcan_class_init,
