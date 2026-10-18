@@ -1,0 +1,13 @@
+#!/bin/sh
+PATH=/sbin:/usr/sbin:/bin:/usr/bin; export PATH
+/bin/mount -t proc proc /proc 2>/dev/null
+/bin/mount -t sysfs sysfs /sys 2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+/bin/mkdir -p /dev/pts /run /var/run 2>/dev/null
+/bin/mount -t devpts devpts /dev/pts 2>/dev/null
+/bin/hostname imx93evk 2>/dev/null
+echo "i.MX93 QEMU - login on HDMI (tty1) and serial (ttyLP0). root has no password." > /etc/issue 2>/dev/null
+# serial console login (type here when QEMU serial is interactive)
+while true; do /sbin/agetty -L ttyLP0 115200 vt100; sleep 1; done &
+# HDMI framebuffer console login (tty1 -> fbcon -> LCDIFv3 scanout)
+while true; do /sbin/agetty --noclear tty1 linux; sleep 1; done

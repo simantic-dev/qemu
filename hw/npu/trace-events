@@ -1,0 +1,11 @@
+# See docs/devel/tracing.rst for syntax documentation.
+
+# ethos_u.c
+ethos_u_read(uint64_t off, uint32_t val) "off=0x%03" PRIx64 " val=0x%08x"
+ethos_u_write(uint64_t off, uint64_t val) "off=0x%03" PRIx64 " val=0x%08" PRIx64
+ethos_u_kick(uint64_t qbase, uint32_t qsize) "qbase=0x%" PRIx64 " qsize=0x%x"
+
+# ethos_u_cmdstream.c
+ethos_u_op(uint16_t opcode, int w, int h, int c, uint64_t ofm) "op=0x%03x ofm=%dx%dx%d @0x%" PRIx64
+ethos_u_op_dma(uint32_t len) "dma len=%u"
+ethos_u_op_stop(void) "stop"

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Ethos-U65 microNPU bring-up check. On the i.MX93 the NPU has no Linux-mapped
+# registers; the arm,ethosu driver binds, takes its reserved memory, and
+# registers /dev/ethosu0 (inference itself rides RPMsg to Cortex-M33 firmware,
+# which is out of scope). This confirms the driver binds and the node appears.
+PATH=/sbin:/usr/sbin:/bin:/usr/bin; export PATH
+/bin/mount -t proc proc /proc 2>/dev/null
+/bin/mount -t sysfs sysfs /sys 2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+sleep 2
+
+echo "=== NPU TEST ==="
+echo "--- /dev/ethosu* ---"
+ls -l /dev/ethosu* 2>/dev/null || echo "(no /dev/ethosu)"
+echo "--- remoteproc (cm33) ---"
+for d in /sys/class/remoteproc/*/; do
+    echo "$d state=$(cat "$d/state" 2>/dev/null) name=$(cat "$d/name" 2>/dev/null)"
+done 2>/dev/null
+echo "--- deferred probe ---"
+cat /sys/kernel/debug/devices_deferred 2>/dev/null
+echo "--- dmesg (ethosu / remoteproc) ---"
+dmesg | grep -iE "ethosu|remoteproc|imx-rproc|cm33" | tail -20
+echo "=== NPU TEST DONE ==="
+while true; do sleep 5; done

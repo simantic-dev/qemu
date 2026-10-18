@@ -312,6 +312,15 @@ static void sdhci_reset(SDHCIState *s)
         s->norintstsen = 0x013f;
         s->errintstsen = 0x117f;
     }
+    /*
+     * VEND_SPEC (i.MX) is a 32-bit vendor register that resets non-zero on
+     * silicon (i.MX 9: 0x3000_7809 - soft clock enables on). The generic and
+     * eSDHC paths never expose it, so vendor_spec_reset defaults to 0 and they
+     * are unchanged; a platform that sets the property gets the RM value. The
+     * driver read-modify-writes VEND_SPEC, so a zero reset would launder the
+     * clock-enable bits off - works in QEMU, fails on hardware.
+     */
+    s->vendor_spec = s->vendor_spec_reset;
 }
 
 static void sdhci_poweron_reset(DeviceState *dev)
@@ -404,6 +413,34 @@ static void sdhci_end_transfer(SDHCIState *s)
         sdbus_do_command(&s->sdbus, &request, response, sizeof(response));
         /* Auto CMD12 response goes to the upper Response register */
         s->rspreg[3] = ldl_be_p(response);
+    } else if (s->trnmod & SDHC_TRNS_MULTI) {
+        /*
+         * Open-ended multi-block transfer with no Auto-CMD12. The controller
+         * has clocked every block, but the card is still in a data-transfer
+         * state waiting for a STOP: receive-data after a WRITE, send-data
+         * after a READ. On real hardware the host's transfer-complete handler
+         * issues CMD12, returning the card (via programming, for a write) to
+         * the transfer/ready state. Without it the SD/eMMC card model is left
+         * mid-transfer, so:
+         *   - after a WRITE, Linux's __mmc_poll_for_busy() (which only accepts
+         *     the transfer state as "not busy") spins -> "Card stuck being
+         *     busy" and the write fails/retries; and
+         *   - after a READ, the next open-ended CMD18/CMD25 finds the card in
+         *     send-data and is rejected (ILLEGAL -> command-response timeout),
+         *     so back-to-back reads storm with timeouts and occasionally fail.
+         * Issue the implicit STOP here for both directions. The card's CMD12
+         * handler is idempotent in the transfer state, so a later
+         * driver-issued CMD12 is a harmless no-op. The response is not
+         * surfaced (the driver did not ask for it). Counted (CMD23) and
+         * Auto-CMD12 transfers already stop the card themselves and take the
+         * branch above or self-terminate, so this only rescues the
+         * open-ended-no-Auto-CMD12 case.
+         */
+        SDRequest request = { .cmd = 0x0C, .arg = 0 };
+        uint8_t response[16];
+
+        trace_sdhci_end_transfer(request.cmd, request.arg);
+        sdbus_do_command(&s->sdbus, &request, response, sizeof(response));
     }
 
     s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
@@ -992,9 +1029,26 @@ static void sdhci_data_transfer(void *opaque)
     }
 }
 
+static bool sdhci_clock_is_on(SDHCIState *s)
+{
+    /*
+     * The i.MX (u)SDHC has no software SD-clock-enable bit (the card clock
+     * is auto-gated by hardware), so its driver never sets
+     * SDHC_CLOCK_SDCLK_EN. For such a controller, treat the clock as
+     * running once the internal clock is enabled and stable; otherwise
+     * every command would be silently dropped (no completion/timeout IRQ),
+     * stalling the guest on 10s host-side timeouts.
+     */
+    if (s->quirks & SDHCI_QUIRK_SDCLK_AUTO_GATE) {
+        return (s->clkcon & (SDHC_CLOCK_INT_EN | SDHC_CLOCK_INT_STABLE)) ==
+               (SDHC_CLOCK_INT_EN | SDHC_CLOCK_INT_STABLE);
+    }
+    return SDHC_CLOCK_IS_ON(s->clkcon);
+}
+
 static bool sdhci_can_issue_command(SDHCIState *s)
 {
-    if (!SDHC_CLOCK_IS_ON(s->clkcon) ||
+    if (!sdhci_clock_is_on(s) ||
         (((s->prnsts & SDHC_DATA_INHIBIT) || s->stopped_state) &&
         ((s->cmdreg & SDHC_CMD_DATA_PRESENT) ||
         ((s->cmdreg & SDHC_CMD_RESPONSE) == SDHC_CMD_RSP_WITH_BUSY &&
@@ -1464,6 +1518,33 @@ static bool sdhci_pending_insert_vmstate_needed(void *opaque)
     return s->pending_insert_state;
 }
 
+/*
+ * Migrate VEND_SPEC as an opt-in subsection. An omitted subsection leaves the
+ * field holding exactly what reset() wrote, so it may be dropped iff the live
+ * value already equals the reset value - migrate it precisely when it differs.
+ * This keeps the generic-SDHCI wire format byte-for-byte unchanged (its value
+ * never leaves 0), and still carries a value the driver read-modify-wrote,
+ * including an i.MX6/7 guest that wrote FRC_SDCLK_ON over a zero reset (a
+ * predicate keyed on "reset != 0" or "value != 0" loses one of those cases).
+ */
+static bool sdhci_vendor_spec_vmstate_needed(void *opaque)
+{
+    SDHCIState *s = opaque;
+
+    return s->vendor_spec != s->vendor_spec_reset;
+}
+
+static const VMStateDescription sdhci_vendor_spec_vmstate = {
+    .name = "sdhci/vendor-spec",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sdhci_vendor_spec_vmstate_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(vendor_spec, SDHCIState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription sdhci_pending_insert_vmstate = {
     .name = "sdhci/pending-insert",
     .version_id = 1,
@@ -1512,6 +1593,7 @@ const VMStateDescription sdhci_vmstate = {
     },
     .subsections = (const VMStateDescription * const []) {
         &sdhci_pending_insert_vmstate,
+        &sdhci_vendor_spec_vmstate,
         NULL
     },
 };
@@ -1535,6 +1617,7 @@ static const Property sdhci_sysbus_properties[] = {
                      dma_mr, TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("wp-inverted", SDHCIState,
                      wp_inverted, false),
+    DEFINE_PROP_UINT32("vendor-spec-reset", SDHCIState, vendor_spec_reset, 0),
 };
 
 static void sdhci_sysbus_init(Object *obj)
@@ -1862,7 +1945,7 @@ static void fsl_esdhc_be_init(Object *obj)
     DeviceState *dev = DEVICE(obj);
 
     s->io_ops = &esdhc_mmio_be_ops;
-    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ;
+    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ | SDHCI_QUIRK_SDCLK_AUTO_GATE;
     qdev_prop_set_uint8(dev, "sd-spec-version", 2);
 }
 
@@ -1887,7 +1970,7 @@ static void fsl_esdhc_le_init(Object *obj)
     DeviceState *dev = DEVICE(obj);
 
     s->io_ops = &esdhc_mmio_le_ops;
-    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ;
+    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ | SDHCI_QUIRK_SDCLK_AUTO_GATE;
     qdev_prop_set_uint8(dev, "sd-spec-version", 2);
 }
 
@@ -1908,7 +1991,7 @@ static void imx_usdhc_init(Object *obj)
     DeviceState *dev = DEVICE(obj);
 
     s->io_ops = &usdhc_mmio_ops;
-    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ;
+    s->quirks = SDHCI_QUIRK_NO_BUSY_IRQ | SDHCI_QUIRK_SDCLK_AUTO_GATE;
     qdev_prop_set_uint8(dev, "sd-spec-version", 3);
 }
 

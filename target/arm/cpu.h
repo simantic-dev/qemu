@@ -260,6 +260,19 @@ typedef enum ARMFPStatusFlavour {
 /* Architecturally there are 128 PPIs in a GICv5 */
 #define GICV5_NUM_PPIS 128
 
+/**
+ * ARMHaltReason - the reason we have entered halt state
+ *
+ * To be able to correctly wake up via arm_cpu_has_work() we need to
+ * track the reason we went to sleep.
+ */
+typedef enum {
+    NOT_HALTED = 0,
+    HALT_PSCI,
+    HALT_WFI,
+    HALT_WFE
+} ARMHaltReason;
+
 typedef struct CPUArchState {
     /* Regs for current mode.  */
     uint32_t regs[16];
@@ -780,6 +793,9 @@ typedef struct CPUArchState {
 
     /* Optional fault info across tlb lookup. */
     ARMMMUFaultInfo *tlb_fi;
+
+    /* Reason the CPU is halted */
+    ARMHaltReason halt_reason;
 
     /*
      * The event register is shared by all ARM profiles (A/R/M),
@@ -2662,6 +2678,17 @@ void arm_register_pre_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook,
  */
 void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
         *opaque);
+
+/*
+ * Machine-registered handler for non-PSCI SiP SMC calls (fork addition; used
+ * by the i.MX 93 SoC for the i.MX SiP RPROC and SOC-info calls). Returns true
+ * if it handled the call, writing up to four SMC return values to ret[0..3]
+ * (mapped to x0..x3 / r0..r3).
+ */
+typedef bool (*ARMSIPHandler)(uint64_t fid, uint64_t a1, uint64_t a2,
+                              uint64_t a3, uint64_t ret[4]);
+extern ARMSIPHandler arm_sip_handler;
+void arm_register_sip_handler(ARMSIPHandler handler);
 
 /**
  * arm_rebuild_hflags:

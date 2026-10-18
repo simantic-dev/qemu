@@ -537,6 +537,7 @@ config ASPEED_SOC
     select I3C
     select DW_I3C
     select I3C_DEVICES
+    select SILVACO_I3C
     select DPS310
     select PCA9552
     select PCA9554
@@ -617,6 +618,60 @@ config FSL_IMX8MP_EVK
     depends on AARCH64
     depends on TCG
     select FSL_IMX8MP
+
+config FSL_IMX93
+    bool
+    select ARM_GIC
+    select ARM_GICV3
+    select FSL_IMX93_ANATOP
+    select FSL_IMX93_CCM
+    select FSL_IMX93_ELE
+    select FSL_IMX93_GPIO
+    select FSL_IMX93_PXP
+    select FSL_IMX93_FLEXIO
+    select FSL_IMX93_DWMAC
+    select FSL_IMX93_LCDIF
+    select FSL_IMX93_DSI
+    select FSL_IMX93_ISI
+    select FSL_IMX93_MEDIA_BLK
+    select FSL_IMX93_EDMA
+    select ADV7535
+    select DDC
+    select VIRTIO_MMIO
+    select FLEXCAN
+    select USB_CHIPIDEA
+    select IMX93_SAI
+    select IMX93_MICFIL
+    select WM8962
+    select ARM_V7M
+    select IMX_MU
+    select ETHOS_U
+    select IMX93_BBNSM
+    select IMX93_WDOG
+    select IMX93_TMU
+    select IMX93_ADC
+    select IMX93_LPSPI
+    select SPI_LINK
+    select I2C_LINK
+    select IMX93_OCOTP
+    select IMX93_SYSCTR
+    select IMX93_TPM
+    select IMX93_TSTMR
+    select IMX93_SEMA42
+    select IMX93_FLEXSPI
+    select IMX93_XCVR
+    select IMX_FEC
+    select IMX_LPI2C
+    select IMX_LPUART
+    select SDHCI
+    select UNIMP
+
+config FSL_IMX93_EVK
+    bool
+    default y
+    depends on AARCH64
+    depends on TCG
+    select FSL_IMX93
 
 config FSL_IMX8MM
     bool

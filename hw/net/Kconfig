@@ -136,6 +136,10 @@ config ROCKER
 config CAN_BUS
     bool
 
+config FLEXCAN
+    bool
+    select CAN_BUS
+
 config CAN_SJA1000
     bool
     default y if PCI_DEVICES
@@ -157,3 +161,6 @@ config CAN_CTUCANFD_PCI
     default y if PCI_DEVICES
     depends on PCI && CAN_CTUCANFD
     select CAN_BUS
+
+config FSL_IMX93_DWMAC
+    bool

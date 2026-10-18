@@ -1,0 +1,309 @@
+# i.MX 93 test/result matrix — SOURCE ANNOTATION (human-authored)
+#
+# This file holds the parts CI cannot infer: the fidelity TIER of each IP block,
+# the human-readable evidence, the caveats, and the not-present (N/A) list.
+# The factual pass/fail comes from the test harness, not from here.
+#
+# `docs/validation/gen-matrix.py` merges this file with a meson testlog
+# (meson-logs/testlog.json) to render test-result-matrix.md. Edit THIS file (or
+# the tests); never hand-edit the generated matrix.
+#
+# tests: list of meson test basenames that back a row. The generator stamps the
+# Status column from their results and flags any that have gone MISSING (a
+# renamed/removed test = drift). A row with no `tests:` is evidence-only and its
+# Status comes from `result:` (for non-meson harnesses: soak, media, torture,
+# functional boot, usbredir) — clearly marked as attested, not CI-stamped.
+
+meta:
+  soc: "i.MX 93"
+  machine: "imx93-11x11-evk"
+  branch: "imx93-dev"
+
+# Fidelity tiers use the fleet-canonical A/B/C/N-A vocabulary (95emulator is the
+# reference; 91 + mcx converged on it). The load-bearing distinction is C-vs-N/A:
+# C = present-but-proprietary (unmodelable), N/A = silicon-absent. i.MX 93 has
+# ZERO Tier-C blocks — its compute engines (Ethos-U65 NPU, PXP, Cortex-M33) are
+# documented and modelled to Tier A, and the one proprietary firmware surface
+# (ELE crypto) is honest-faulted to the guest at Tier B (stubbed-but-doable, the
+# same call mcx made for ELS). C is still DEFINED here, with no rows, so that
+# Tier B provably means the same thing fleet-wide. (An earlier version of this
+# file mis-defined C as "registration/stub" — the same latent collision 91 found;
+# that sense is the LOW end of B, not a separate tier, and is folded into B below.)
+tiers:
+  A: "Data path verified — real data/compute flows through the block and is checked against a golden or reference (end-to-end in-guest and/or qtest with golden output)."
+  B: "Driver bring-up — the stock BSP Linux driver probes and operates the block (registers, IRQs, basic transactions); correct for bring-up but no golden-verified host data path. Spans bare registration/enumeration (the old 'stub' sense) up to full driver operation; the common thread is stubbed-but-DOABLE, not proprietary. QEMU's usual peripheral convention."
+  C: "Proprietary compute — the block's core function is proprietary microcode/logic with no ISA or algorithm in the reference manual, so it cannot be modelled honestly (only its host-visible register/mailbox interface can exist). i.MX 93 has ZERO Tier-C blocks (see the taxonomy caveat); C is defined so that Tier B provably means the same thing fleet-wide."
+  "N/A": "Not present on i.MX 93 silicon — the block genuinely does not exist on this SoC (distinct from Tier C, which is present but unmodelable). Documented so an absence is never mistaken for a gap."
+
+harnesses:
+  - harness: "Unit (pure logic)"
+    location: "tests/unit/test-ethos-u-{cmdstream,mlw,kernels,requant}"
+    scope: "NPU decoder / weight (mlw) / int8 kernels / requant, host-only"
+    tests: [test-ethos-u-cmdstream, test-ethos-u-mlw, test-ethos-u-kernels, test-ethos-u-requant]
+  - harness: "qtest (device)"
+    location: "tests/qtest/ethos-u-test, imx93-*-test"
+    scope: "MMIO-level device behaviour, golden compares"
+    tests: [ethos-u-test, imx93-pxp-test, imx93-isi-test, imx93-sai-test, imx93-lpi2c-test, imx93-lpspi-test, imx93-flexio-test, imx93-flexspi-test, imx93-ele-test, flexcan-test, imx93-flexcan-test, imx93-reset-test, imx93-pca9538-test]
+  - harness: "Functional (boot)"
+    location: "upstream/test_imx93_evk.py (staged for upstream)"
+    scope: "Boot stock BSP Linux to userspace"
+    result: "PASS (attested)"
+  - harness: "Media conformance"
+    location: "tests/media-conformance/"
+    scope: "v4l2-compliance (ISI), modetest (LCDIF/KMS)"
+    result: "36 PASS / 0 FAIL / 26 SKIP (attested)"
+  - harness: "Torture / concurrency"
+    location: "tests/torture/"
+    scope: "Live desktop while NPU/CPU/storage/net hammer"
+    result: "0 oops / 0 wedge (attested)"
+  - harness: "Soak"
+    location: "(run log)"
+    scope: "24 h comprehensive, all datapaths concurrent"
+    result: "PASS 2026-06-13 — 11 cycles, 61 boots, 0 incidents, RSS flat (attested)"
+  - harness: "Inter-QEMU USB (mission #5)"
+    location: "tests/usbredir-imx93/ (host end)"
+    scope: "usb-redir imx93 host <-> MCX device: enumerate (HS) + vendor bulk-echo + CDC-ACM /dev/ttyACM0, byte-exact"
+    result: "PASS — bulk 64B echoed byte-for-byte; CDC ttyACM round-trip; proven on imx93 + imx91 hosts (attested)"
+  - harness: "Inter-QEMU interconnect (board-to-board)"
+    location: "tests/interconnect-imx93/ (run-{eth,uart,spi,can,i2c}.sh + run-spi-mcx.sh)"
+    scope: "Two instances bridged by a QEMU socket, real data crosses byte-exact: FEC eth, LPUART2, LPSPI1 (spi-link), FlexCAN (can-host-chardev), LPI2C3 (i2c-link); + cross-SoC 93<->MCX/91/95"
+    result: "PASS — eth/UART/SPI/CAN/I2C each byte-exact b2b; full cross-SoC matrix (91/93/95/MCX) closed (attested)"
+
+groups:
+  - name: "Compute / boot core"
+    rows:
+      - block: "Dual Cortex-A55 SMP"
+        tier: A
+        evidence: "Boots stock BSP Linux to userspace, SMP"
+        notes: "Not cycle-accurate"
+      - block: "Cortex-M33 + RPMsg (MU)"
+        tier: A
+        evidence: "Real NXP firmware boots; A55<->M33 RPMsg live"
+        notes: "Concurrent M33 boot can wedge the desktop guest — NXP BSP defects, not the model"
+      - block: "eDMA1 / eDMA2"
+        tier: A
+        evidence: "Drives SAI audio (cyclic, drain-paced); live. CHn_SBR reset value matches the RM (0x8007: PAL + MID=7) so the fsl-edma read-modify-write does not launder the wrong bus attributes"
+        tests: [imx93-reset-test]
+      - block: "CCM / ANATOP / SRC / power"
+        tier: B
+        evidence: "Linux programs clocks/PLLs/resets directly (no System Manager)"
+        notes: "The defining i.MX93-vs-95 difference — modelled, not SCMI-stubbed"
+      - block: "OCOTP / ELE / BBNSM / SEMA42"
+        tier: B
+        evidence: "Driver probe + mailbox / register transactions; ELE returns real host entropy for GET_RANDOM and honest-faults other crypto to the guest (qtest). BBNSM_CTRL reset value matches the RM (0x0100_0005: RTC_EN/TA_EN two-bit-safety encoded to 01=disabled, not the impossible 00) so the driver's read-modify-write does not launder an illegal field - boot-verified rtc0 registers and reads a valid time"
+        notes: "EdgeLock Enclave mailbox functional; uncomputed crypto fails closed to the guest by default"
+        tests: [imx93-ele-test, imx93-reset-test]
+      - block: "SYSCTR / TSTMR / TPM / WDOG / TMU"
+        tier: B
+        evidence: "Timers/thermal/watchdog driver bring-up; WDOG CS/TOVAL reset values match the RM (0x2900/0x400) and coexist with the UNLOCK/enable/re-lock handshake"
+        tests: [imx93-reset-test]
+
+  - name: "Networking / storage"
+    rows:
+      - block: "FEC (imx_fec)"
+        tier: A
+        evidence: "Real traffic + DHCP; torture drives live FEC; board-to-board byte-exact (run-eth.sh)"
+      - block: "eQOS (dwmac)"
+        tier: A
+        evidence: "Real traffic + DHCP"
+      - block: "uSDHC (SD/eMMC)"
+        tier: A
+        evidence: "Boots rootfs from SD; VEND_SPEC reset value matches the RM (0x3000_7809, soft clock enables on) via a qdev property so the sdhci-esdhc-imx read-modify-write does not launder the clock gates off - boot-verified all 3 controllers probe. Migration: tests/usdhc-imx93/migrate.py asserts the value survives a real migrate (incl. a guest's deliberate zero) AND that the vmstate subsection is genuinely omitted when the field still holds its reset value (+160 B exactly when needed) - mutation-verified against both wrong predicates"
+        tests: [imx93-reset-test]
+      - block: "USB (Chipidea host)"
+        tier: A
+        evidence: "Real USB devices enumerate in-guest; inter-QEMU usb-redir link byte-exact — vendor bulk-echo (64B) + CDC-ACM /dev/ttyACM0 round-trip vs MCX gadget, on imx93 + imx91 hosts"
+        notes: "PORTSC.PSPD fix drives HS enumeration; mission #5 USB data path complete"
+
+  - name: "Display / graphics / camera / audio"
+    rows:
+      - block: "LCDIFv3 -> MIPI-DSI -> ADV7535 -> HDMI"
+        tier: A
+        evidence: "Pixels scanned out 1920x1080; modetest 7 formats + pageflip + SMPTE screendump. CTRL reset value matches the RM (0x8000_0000: SW_RESET held) - the block comes up in software reset like silicon; boot-verified the DSI connector still scans out"
+        notes: "Login/typeable console; Weston desktop"
+        tests: [imx93-reset-test]
+      - block: "Media Block Control"
+        tier: B
+        evidence: "Display/camera muxing for the above"
+      - block: "PXP (G2D 2D engine)"
+        tier: A
+        evidence: "copy/fill/blit/blend/rotate byte-exact (qtest + e2e); Weston composites through PXP"
+        tests: [imx93-pxp-test]
+        notes: "scale + CSC not modelled — libg2d/pxp_dma_v3 stack limit, not a model gap"
+      - block: "ISI + MIPI-CSI + MT9M114 / OV5640"
+        tier: A
+        evidence: "Real V4L2 frames to /dev/video0; v4l2-compliance 48/48 ioctl + 55/55 streaming"
+        tests: [imx93-isi-test, imx93-pca9538-test]
+        notes: "Camera chip-IDs are the real datasheet values AND driver-validated: ov5640 0x5640 (ov5640_check_chip_id errors otherwise), mt9m114 0x2481. The PCA9538 camera expander (0x70 on LPI2C8) resets to its TI-datasheet POR (config 0xFF = all inputs, output 0xFF), not memset-0's all-outputs; imx93-pca9538-test drives a real LPI2C8 master transaction to read it back, mutation-proven"
+      - block: "Camera → LCD (vision transport)"
+        tier: A
+        evidence: "A real photograph in over the CSI, out on the adv7535 HDMI display, with no ISP in the path. Two independent proofs: the guest's FNV-1a hash of the captured frame equals a host-staged frame (bytes crossed intact), and a screendump of the display correlates against the source at r=0.9986 (pixels actually scanned out). Three distinct frames are staged and the captured hashes are required to vary, so the result means per-frame capture, not one frame re-served"
+        notes: "tests/camera-to-display/run.sh. One prebuilt dtb (imx93-11x11-evk-mt9m114.dtb) carries both the mt9m114 camera and the adv7535 display — no overlay/splice, unlike the i.MX95. The ISI serves its synthetic gradient SILENTLY on a short per-frame read (wrong geometry), so the host-staged-hash comparison is load-bearing: a gradient substitution hashes to no staged frame and fails honestly. This caught a real geometry error during bring-up (frames staged at 640x480 vs the negotiated 1280x720)"
+      - block: "SAI3 + WM8962 codec"
+        tier: A
+        evidence: "Real PCM playback ASSERTED on the captured samples: run.sh always captures to a wav (driver=wav opens a file, never a device - simultaneously the mute and the evidence) and check_wav.py requires peak == 8000, ~1s of signal, and a 436 Hz tone, so a datapath that scaled, truncated or mis-paced the stream fails. Mutation-verified: halving the amplitude and dropping half the samples each fail, and each is missed by the other's gate. TCSR/RCSR FIFO request/warning flags gated on TE/RE - a disabled transmitter reports no FIFO request, matching the RM"
+        tests: [imx93-sai-test, imx93-reset-test]
+        notes: "VERID reports the RM's version (3.2), not an invented 3.3; the FEATURE word is deliberately 0 where silicon says 2 (bit 1 = TSTMP_EN, which fsl_sai gates real code on) because the timestamp engine is not modelled - under-reporting a capability is the only direction safe both here and on the board. SAI access width pinned to 16-bit for eDMA S16 writes. The SAI is a bit-clock SLAVE (TCR2.BCD_MSTR clear), so the frame rate is not derivable from its registers - they are byte-identical at 48 kHz and 16 kHz. The WM8962 decodes R27 ADDITIONAL_CONTROL_3 and drives the rate to the SAI's codec-rate input, as the board does; the SAI opens its voice and paces its FIFO from it. Mutation-verified: cut the wire and a 16 kHz stream is clocked out 3x too fast (tone 145 Hz -> 436 Hz, a third of the duration). Codec decoder taken from the i.MX 95 node"
+      - block: "MICFIL (PDM mic) / XCVR"
+        tier: B
+        evidence: "Driver bring-up; ALSA cards register"
+        notes: "MICFIL VERID/PARAM report the RM's values (0x020F_0000 / 0x010B_0154) with only the HWVAD capability masked out, because the voice-activity detector is not modelled - under-reporting a capability is the safe direction. PARAM used to advertise an 8-deep FIFO, a number nobody had: the RM says 32, the driver's imx93 soc_data says 32, and this model's array holds 64. A build assertion now decodes the advertised depth from PARAM the way the guest does and requires the array to be at least that deep"
+
+  - name: "Accelerator (NPU)"
+    rows:
+      - block: "Ethos-U65 microNPU"
+        tier: A
+        evidence: "uint8 MobileNet end-to-end via eIQ delegate, argmax == host; bit-exact int8 across real CNNs; qtest conv golden + honest-fault; unit tests (mlw/kernels/requant/cmdstream)"
+        tests: [ethos-u-test, test-ethos-u-cmdstream, test-ethos-u-mlw, test-ethos-u-kernels, test-ethos-u-requant]
+        notes: "Opt-in honest-fault (see fidelity-audit.md); mlw decoder Apache-2.0 (upstream blocker, NPU-only); nasnet +/-1 residual capped"
+
+  - name: "Expansion buses (developer-attachable)"
+    rows:
+      - block: "LPI2C x8"
+        tier: A
+        evidence: "qtest; -device bus=lpi2cN attachable; board-to-board byte-exact via i2c-link (run-i2c.sh). PARAM reports the RM FIFO depth (0x0303 = 2^3 = 8, not the 0x0404 = 16 we used to over-report) - i2c-imx-lpi2c sizes its watermark and read chunking from it, so over-reporting mis-sizes the driver on silicon; a build assertion keeps the advertised depth <= what the model delivers. Boot-verified: adv7511 probes over the corrected bus"
+        tests: [imx93-lpi2c-test]
+      - block: "LPSPI x8"
+        tier: A
+        evidence: "qtest; board-to-board byte-exact via spi-link (run-spi.sh); cross-SoC 93<->MCX / 93<->95 / 91<->93"
+        tests: [imx93-lpspi-test]
+        notes: "PARAM.PCSNUM + per-frame FCF fixes let the real fsl-lpspi bind + move data"
+      - block: "LPUART x8"
+        tier: A
+        evidence: "Serial console; DMA-mode RX (cyclic eDMA); board-to-board byte-exact (run-uart.sh)"
+      - block: "FlexIO"
+        tier: B
+        evidence: "qtest (I2C master)"
+        tests: [imx93-flexio-test]
+      - block: "FlexSPI"
+        tier: B
+        evidence: "qtest (NOR bring-up + reset values / earned DLL lock)"
+        tests: [imx93-flexspi-test]
+        notes: "AHBRXBUFnCR0 reset per-index to the RM's 0x800n_0020 (MSTRID = buffer index; a blanket seed mis-IDs every buffer). STS2 resets to 0x0100_0100 with the four DLL-lock bits CLEAR; the lock is EARNED when firmware writes DLLxCR[DLLEN] (nxp-fspi polls STS2 for it and would time out against memset-0), never seeded. Mutation-proven three ways incl. seed-locked-at-reset -> fails, enforcing earned-not-seeded. Latent in the stock dtb (FlexSPI status=disabled); the qtest is the reader"
+      - block: "FlexCAN / CAN bus"
+        tier: A
+        evidence: "Board-to-board byte-exact via can-host-chardev (run-can.sh); cross-SoC 91<->93; qtest: RXIMR ID-match + overrun + disabled-controller gating (real CAN1->CAN2, mutation-verified). MCR reset value matches the RM (0x5980_040F: enabled+frozen, SUPV set, MAXMB=16) so the fsl_flexcan read-modify-write does not launder module-disable / wrong mailbox count"
+        notes: "can-host-chardev bridges a can-bus to a chardev — no host vcan/SocketCAN needed"
+        tests: [flexcan-test, imx93-flexcan-test, imx93-reset-test]
+      - block: "GPIO / PMIC"
+        tier: B
+        evidence: "Poweroff, GPIO-idle-HIGH; PMIC over I2C"
+      - block: "ADC"
+        tier: B
+        evidence: "Driver bring-up; SAR-ADC MCR/MSR reset values match the RM (0x3901/0x1)"
+        tests: [imx93-reset-test]
+      - block: "I3C1 (Silvaco)"
+        tier: B
+        evidence: "I3C master bridges to legacy-I2C; wm8962-on-I3C audio card probes over it"
+
+na:
+  - block: "System Manager / SCMI"
+    why: "i.MX93 has none — Linux programs CCM/ANATOP/SRC directly (vs i.MX95)"
+  - block: "Hardware JPEG (CAST)"
+    why: "i.MX95-only block; JPEG on i.MX93 is software"
+  - block: "GPU (compute)"
+    why: "No emulatable GPU compute; Linux sees the node but 3D is not executed"
+
+# README capability-table view (condensed rendering; the detailed per-block table
+# is docs/validation/test-result-matrix.md). One source of truth = this file, two
+# renderings. gen-matrix.py --inject-readme regenerates the README table from here
+# and VERIFIES every present/absent block is grouped exactly once and every group
+# is single-tier (so the README table and the matrix cannot drift).
+readme_groups:
+  - { label: "Dual Cortex-A55 SMP, GICv3", tier: A,
+      evidence: "Boots NXP + mainline Linux to a shell on ttyLP0; clean PSCI power-off",
+      blocks: ["Dual Cortex-A55 SMP"] }
+  - { label: "Cortex-M33 + A55↔M33 RPMsg (MU1)", tier: A,
+      evidence: "Real NXP FreeRTOS firmware; rpmsg_lite ping-pong round-trips over shared vrings",
+      blocks: ["Cortex-M33 + RPMsg (MU)"] }
+  - { label: "Ethos-U65 microNPU", tier: A,
+      evidence: "Bit-exact int8 inference in-QEMU (Vela command stream: mlw decode, conv/dw/pool/elementwise, gemmlowp requant); matches host TFLite; 19 unit + 12 qtest subtests",
+      blocks: ["Ethos-U65 microNPU"] }
+  - { label: "eDMA1 / eDMA2", tier: A,
+      evidence: "Real TCD execution - LPI2C EDID read, cyclic scatter-gather audio pacing, per-CHn_MUX routing",
+      blocks: ["eDMA1 / eDMA2"] }
+  - { label: "Networking — FEC (eth0) + eQOS/dwmac4 (eth1)", tier: A,
+      evidence: "Both DHCP; real frames; board-to-board byte-exact",
+      blocks: ["FEC (imx_fec)", "eQOS (dwmac)"] }
+  - { label: "Storage — uSDHC", tier: A,
+      evidence: "SDHCI ADMA; ext4 mmcblk0 r/w/sync from -drive if=sd",
+      blocks: ["uSDHC (SD/eMMC)"] }
+  - { label: "Display — LCDIFv3 → DSI → ADV7535 → HDMI (+ LVDS)", tier: A,
+      evidence: "1920x1080 /dev/fb0, framebuffer scanned out + screendump byte-correct; fbcon login",
+      blocks: ["LCDIFv3 -> MIPI-DSI -> ADV7535 -> HDMI"] }
+  - { label: "Camera — MT9M114/OV5640 → CSI → ISI → V4L2", tier: A,
+      evidence: "5/5 byte-checked frames off /dev/video0 (parallel + MIPI-CSI2); host-image virtual camera",
+      blocks: ["ISI + MIPI-CSI + MT9M114 / OV5640"] }
+  - { label: "Camera → LCD — the vision transport path end to end", tier: A,
+      evidence: "a smart-camera frame in over the CSI, out on the adv7535 HDMI display (one prebuilt dtb carries both): capture hash == a host-staged frame, three distinct frames prove per-frame capture, display correlation r=0.9986",
+      blocks: ["Camera → LCD (vision transport)"] }
+  - { label: "Audio — SAI3/WM8962 play + capture", tier: A,
+      evidence: "Real PCM via cyclic eDMA2; -audio driver=wav captures the played square wave and the test asserts its values - peak, a full second of signal, and the tone - at TWO rates (48 kHz and 16 kHz), because a model that assumes one rate is invisible to a test that only asks for that rate. The WM8962 decodes its clocking and drives the rate to the SAI, which is the bit-clock slave; cut that wire and the 16 kHz case goes red. Concurrent streams",
+      blocks: ["SAI3 + WM8962 codec"] }
+  - { label: "PXP 2D (G2D)", tier: A,
+      evidence: "copy/fill/blit/src-over-blend/rotate byte-exact (libg2d -> /dev/pxp_device -> model); use-g2d=true Weston composites through it",
+      blocks: ["PXP (G2D 2D engine)"] }
+  - { label: "LPUART ×8", tier: A,
+      evidence: "Serial console; DMA-mode RX (cyclic eDMA); board-to-board byte-exact",
+      blocks: ["LPUART x8"] }
+  - { label: "LPSPI ×8", tier: A,
+      evidence: "Per-bus SSI master; is25lp064 JEDEC byte-exact; drives board-to-board SPI (spi-link)",
+      blocks: ["LPSPI x8"] }
+  - { label: "LPI2C ×8 (+ PMIC/expanders)", tier: A,
+      evidence: "-device …,bus=lpi2cN enumerated + read byte-exact; drives board-to-board I2C (i2c-link)",
+      blocks: ["LPI2C x8"] }
+  - { label: "FlexCAN ×2", tier: A,
+      evidence: "can0 up; RXIMR ID-matched RX + overrun + MDIS-gated; frame round-trip; board-to-board (can-host-chardev)",
+      blocks: ["FlexCAN / CAN bus"] }
+  - { label: "ChipIdea USB host (ci_hdrc)", tier: A,
+      evidence: "usb-storage/usb-kbd enumerate; usbredir host — bulk-echo + CDC /dev/ttyACM0 byte-exact",
+      blocks: ["USB (Chipidea host)"] }
+  - { label: "Clocks / power — CCM / ANATOP / SRC", tier: B,
+      evidence: "Linux programs directly (no System Manager)",
+      blocks: ["CCM / ANATOP / SRC / power"] }
+  - { label: "Enclave + fuses + timers — ELE/OCOTP/BBNSM/SEMA42, SYSCTR/TPM/WDOG/TMU", tier: B,
+      evidence: "Drivers bind; registers/IRQ/timing correct (ELE serves coordination/probe cmds, returns real host entropy for GET_RANDOM, and honest-faults every other crypto to the guest by default)",
+      blocks: ["OCOTP / ELE / BBNSM / SEMA42", "SYSCTR / TSTMR / TPM / WDOG / TMU"] }
+  - { label: "Media Block Control", tier: B,
+      evidence: "MEDIAMIX block-ctrl GPR + SRC power slice for the display/camera path",
+      blocks: ["Media Block Control"] }
+  - { label: "MICFIL (PDM mic) / XCVR (SPDIF)", tier: B,
+      evidence: "ALSA cards register; driver bring-up",
+      blocks: ["MICFIL (PDM mic) / XCVR"] }
+  - { label: "I3C1 (Silvaco) · FlexIO-as-I²C", tier: B,
+      evidence: "I3C master bridges to legacy-I2C (wm8962-on-I3C registers); FlexIO drives an extra I2C master (qtest)",
+      blocks: ["I3C1 (Silvaco)", "FlexIO"] }
+  - { label: "FlexSPI", tier: B,
+      evidence: "qtest (NOR bring-up)",
+      blocks: ["FlexSPI"] }
+  - { label: "GPIO / PMIC · ADC", tier: B,
+      evidence: "Poweroff, GPIO-idle-HIGH, PMIC over I2C; ADC driver bring-up",
+      blocks: ["GPIO / PMIC", "ADC"] }
+
+readme_absent:
+  - { label: "System Manager (SM/SCMI)",
+      reason: "i.MX 91/93 have none; Linux programs CCM/ANATOP/SRC directly (vs the i.MX 95)",
+      blocks: ["System Manager / SCMI"] }
+  - { label: "Hardware JPEG/video codec (CAST)",
+      reason: "i.MX 95-only; on the i.MX 93 multimedia is software on the A55s (GStreamer proves the path)",
+      blocks: ["Hardware JPEG (CAST)"] }
+  - { label: "3D GPU (compute)",
+      reason: "No emulatable GPU compute; Weston is software-rendered (the 2D PXP is present)",
+      blocks: ["GPU (compute)"] }
+
+caveats:
+  - area: "Fidelity tier C (proprietary compute)"
+    boundary: "i.MX 93 has zero Tier-C blocks"
+    disposition: "Ethos-U65 NPU / PXP / Cortex-M33 are documented and modelled to Tier A (not opaque); ELE crypto is honest-faulted at Tier B, not silently stubbed. C is defined with no rows so Tier B means the same thing fleet-wide (stubbed-but-doable, never proprietary-forever)"
+  - area: "M33 concurrent boot"
+    boundary: "Booting the M33 while the desktop guest runs can wedge the guest"
+    disposition: "Two NXP BSP defects, documented in tests/torture/; not a model bug"
+  - area: "PXP G2D"
+    boundary: "scale + CSC not modelled"
+    disposition: "libg2d/pxp_dma_v3 vendor stack rejects the op; copy/fill/blit/blend/rotate byte-exact"
+  - area: "NPU mlw decoder"
+    boundary: "hw/npu/mlw is Apache-2.0"
+    disposition: "Upstream-licensing blocker for the NPU only; does not block the core machine"
+  - area: "NPU nasnet"
+    boundary: "+/-1-rounding accumulation, occasional argmax flip on the deepest degenerate-int8 model"
+    disposition: "Isolation-blocked and capped; all real trained workloads tested are bit-exact"

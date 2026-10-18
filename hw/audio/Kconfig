@@ -55,3 +55,16 @@ config VIRTIO_SND
     bool
     default y
     depends on VIRTIO
+
+config IMX93_SAI
+    bool
+
+config IMX93_MICFIL
+    bool
+
+config WM8962
+    bool
+    depends on I2C
+
+config IMX93_XCVR
+    bool

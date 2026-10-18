@@ -75,7 +75,7 @@ struct SDHCIState {
     uint16_t acmd12errsts; /* Auto CMD12 error status register */
     uint16_t hostctl2;     /* Host Control 2 */
     uint64_t admasysaddr;  /* ADMA System Address Register */
-    uint16_t vendor_spec;  /* Vendor specific register */
+    uint32_t vendor_spec;  /* Vendor specific register (i.MX VEND_SPEC, 32-bit) */
 
     /* Read-only registers */
     uint64_t capareg;      /* Capabilities Register */
@@ -94,6 +94,7 @@ struct SDHCIState {
     /* RO Host Controller Version Register always reads as 0x2401 */
 
     /* Configurable properties */
+    uint32_t vendor_spec_reset; /* i.MX VEND_SPEC reset value (0 => generic) */
     bool pending_insert_quirk; /* Quirk for Raspberry Pi card insert int */
     uint32_t quirks;
     uint8_t sd_spec_version;
@@ -114,6 +115,17 @@ typedef struct SDHCIState SDHCIState;
  * original bit number is preserved
  */
 #define SDHCI_QUIRK_NO_BUSY_IRQ    BIT(14)
+
+/*
+ * The i.MX (u)SDHC gates the SD card clock automatically and has no
+ * software-visible "SD Clock Enable" bit: its driver programs only the
+ * divider and the internal-clock enable, never SDHC_CLOCK_SDCLK_EN. With
+ * this quirk the controller is considered ready to issue commands once the
+ * internal clock is enabled and stable, instead of also requiring
+ * SDHC_CLOCK_SDCLK_EN (which such a driver never sets). QEMU-internal bit,
+ * not mirrored from Linux.
+ */
+#define SDHCI_QUIRK_SDCLK_AUTO_GATE    BIT(16)
 
 #define TYPE_PCI_SDHCI "sdhci-pci"
 DECLARE_INSTANCE_CHECKER(SDHCIState, PCI_SDHCI,

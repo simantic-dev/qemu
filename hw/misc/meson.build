@@ -59,6 +59,13 @@ system_ss.add(when: 'CONFIG_ECCMEMCTL', if_true: files('eccmemctl.c'))
 system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_pmu.c', 'exynos4210_clk.c', 'exynos4210_rng.c'))
 system_ss.add(when: 'CONFIG_FSL_IMX8MP_ANALOG', if_true: files('imx8mp_analog.c'))
 system_ss.add(when: 'CONFIG_FSL_IMX8MP_CCM', if_true: files('imx8mp_ccm.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_CCM', if_true: files('imx93_ccm.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_ANATOP', if_true: files('imx93_anatop.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_PXP', if_true: files('imx93_pxp.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_FLEXIO', if_true: files('imx93_flexio.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_ELE', if_true: files('imx93_ele.c'))
+system_ss.add(when: 'CONFIG_FSL_IMX93_MEDIA_BLK', if_true: files('imx93_media_blk.c'))
+system_ss.add(when: 'CONFIG_IMX_MU', if_true: files('imx_mu.c'))
 system_ss.add(when: 'CONFIG_IMX', if_true: files(
   'imx25_ccm.c',
   'imx31_ccm.c',
@@ -167,3 +174,5 @@ system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
 
 # HPPA devices
 system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
+system_ss.add(when: 'CONFIG_IMX93_TMU', if_true: files('imx93_tmu.c'))
+system_ss.add(when: 'CONFIG_IMX93_SEMA42', if_true: files('imx93_sema42.c'))

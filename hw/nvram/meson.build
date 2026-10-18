@@ -23,3 +23,4 @@ system_ss.add(when: 'CONFIG_ACPI', if_true: files('fw_cfg-acpi.c'))
 system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files(
   'aspeed_otp.c',
   ))
+system_ss.add(when: 'CONFIG_IMX93_OCOTP', if_true: files('imx93_ocotp.c'))

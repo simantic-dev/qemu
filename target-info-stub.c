@@ -9,7 +9,6 @@
 #include "qemu/osdep.h"
 #include "qemu/target-info.h"
 #include "qemu/target-info-impl.h"
-#include "qemu/target-info-init.h"
 #include "hw/core/boards.h"
 #include "cpu.h"
 #include "exec/cpu-defs.h"
@@ -42,4 +41,7 @@ static const TargetInfo target_info_stub = {
 #endif
 };
 
-target_info_init(target_info_stub)
+const TargetInfo *target_info(void)
+{
+    return &target_info_stub;
+}

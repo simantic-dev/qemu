@@ -1,0 +1,25 @@
+#!/bin/sh
+# Camera capture check for the i.MX93 QEMU machine.
+#
+# With the mt9m114 device-tree variant the capture pipeline is
+#   mt9m114 sensor -> parallel-CSI (pcsi) -> ISI crossbar -> mxc_isi.0 -> video0
+# The sensor->pcsi link is disabled by default (as on real hardware), so the
+# oracle (/v4l2_cap cap) first enables it and propagates the sensor format down
+# the chain - the media-ctl equivalent - then streams MMAP buffers off
+# /dev/video0. The ISI model DMAs a moving test pattern into the ping-pong
+# output buffers and raises the frame-stored IRQ, so a real V4L2 client gets
+# real, changing frames. Expect: CAMERA-CAP[/dev/video0]: PASS (5/5 frames).
+PATH=/sbin:/usr/sbin:/bin:/usr/bin; export PATH
+/bin/mount -t proc proc /proc 2>/dev/null
+/bin/mount -t sysfs sysfs /sys 2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+sleep 3
+
+echo "=== CAMERA CAPTURE TEST ==="
+ls -l /dev/video* /dev/media* /dev/v4l-subdev* 2>/dev/null
+echo "--- media topology ---"
+/v4l2_cap topo /dev/media0
+echo "--- capture ---"
+/v4l2_cap cap /dev/video0
+echo "=== CAMERA CAPTURE DONE ==="
+while true; do sleep 5; done

@@ -1,0 +1,32 @@
+#!/bin/sh
+# FlexIO-as-I2C functional check for the i.MX93 QEMU machine.
+#
+# With the imx93-11x11-evk-flexio-i2c device tree the FlexIO block is brought
+# up as an extra I2C master (nxp,imx-flexio MFD + i2c-flexio), exposed as
+# /dev/i2c-8 (425c0000.flexio:i2c-master). The model drives the shifter/timer
+# handshake against a real QEMU I2C bus, so a peripheral attached on that bus
+#
+#   -device tmp105,bus=flexio1-i2c,address=0x49
+#
+# is reachable from Linux. Expect i2cdetect to find 0x49, the temperature
+# register to read 0x0000, and a config-register write to read back - a full
+# round trip over the FlexIO I2C.
+PATH=/sbin:/usr/sbin:/bin:/usr/bin; export PATH
+/bin/mount -t proc proc /proc 2>/dev/null
+/bin/mount -t sysfs sysfs /sys 2>/dev/null
+/bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null
+sleep 4
+
+echo "=== FLEXIO I2C TEST ==="
+echo "--- i2c adapters ---"
+for d in /sys/bus/i2c/devices/i2c-*; do
+    echo "$d -> $(cat "$d/name" 2>/dev/null)"
+done
+echo "--- i2cdetect on the FlexIO bus (i2c-8) ---"
+i2cdetect -y 8 2>&1 | sed -n '1,6p'
+echo "--- tmp105 @0x49 over FlexIO ---"
+echo "temp reg 0x00 (word): $(i2cget -y 8 0x49 0x00 w 2>&1)"
+i2cset -y 8 0x49 0x01 0x60 2>&1
+echo "config reg 0x01 readback: $(i2cget -y 8 0x49 0x01 2>&1)  (wrote 0x60)"
+echo "=== FLEXIO I2C DONE ==="
+while true; do sleep 5; done

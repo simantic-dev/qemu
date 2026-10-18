@@ -34,3 +34,6 @@ specific_ss.add(when: 'CONFIG_IBEX', if_true: files('ibex_timer.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_PWM', if_true: files('sifive_pwm.c'))
 
 system_ss.add(when: 'CONFIG_AVR_TIMER16', if_true: files('avr_timer16.c'))
+system_ss.add(when: 'CONFIG_IMX93_SYSCTR', if_true: files('imx93_sysctr.c'))
+system_ss.add(when: 'CONFIG_IMX93_TPM', if_true: files('imx93_tpm.c'))
+system_ss.add(when: 'CONFIG_IMX93_TSTMR', if_true: files('imx93_tstmr.c'))

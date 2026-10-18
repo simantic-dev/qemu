@@ -8,7 +8,6 @@
 
 #include "qemu/osdep.h"
 #include "qemu/target-info-impl.h"
-#include "qemu/target-info-init.h"
 #include "hw/arm/machines-qom.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/cpu-param.h"
@@ -24,4 +23,7 @@ static const TargetInfo target_info_arm_system = {
     .page_bits_init = TARGET_PAGE_BITS_LEGACY,
 };
 
-target_info_init(target_info_arm_system)
+const TargetInfo *target_info(void)
+{
+    return &target_info_arm_system;
+}

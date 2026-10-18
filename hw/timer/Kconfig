@@ -65,3 +65,12 @@ config STELLARIS_GPTM
 
 config AVR_TIMER16
     bool
+
+config IMX93_SYSCTR
+    bool
+
+config IMX93_TPM
+    bool
+
+config IMX93_TSTMR
+    bool

@@ -953,6 +953,28 @@ F: docs/system/arm/imx8m.rst
 F: tests/functional/aarch64/test_imx8mp_evk.py
 F: tests/qtest/rs5c372-test.c
 
+NXP i.MX93 11x11 EVK / i.MX93
+M: Kyle Fox <kylefoxaustin@gmail.com>
+L: qemu-arm@nongnu.org
+S: Maintained
+F: hw/arm/imx93-evk.c
+F: hw/arm/fsl-imx93.c
+F: hw/misc/imx93_*.c
+F: hw/display/imx93_*.c
+F: hw/display/adv7535.c
+F: hw/dma/imx93_edma.c
+F: hw/net/imx93_dwmac.c
+F: hw/net/can/flexcan.c
+F: include/hw/arm/fsl-imx93.h
+F: include/hw/misc/imx93_*.h
+F: include/hw/display/imx93_*.h
+F: include/hw/display/adv7535.h
+F: include/hw/dma/imx93_edma.h
+F: include/hw/net/imx93_dwmac.h
+F: include/hw/net/flexcan.h
+F: docs/system/arm/imx93-evk.rst
+F: tests/qtest/flexcan-test.c
+
 MPS2 / MPS3
 M: Peter Maydell <peter.maydell@linaro.org>
 L: qemu-arm@nongnu.org

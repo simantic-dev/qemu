@@ -2,6 +2,9 @@ config APPLESMC
     bool
     depends on ISA_BUS
 
+config IMX_MU
+    bool
+
 config ARMSSE_CPUID
     bool
 
@@ -99,6 +102,24 @@ config FSL_IMX8MP_ANALOG
     bool
 
 config FSL_IMX8MP_CCM
+    bool
+
+config FSL_IMX93_CCM
+    bool
+
+config FSL_IMX93_ANATOP
+    bool
+
+config FSL_IMX93_PXP
+    bool
+
+config FSL_IMX93_FLEXIO
+    bool
+
+config FSL_IMX93_ELE
+    bool
+
+config FSL_IMX93_MEDIA_BLK
     bool
 
 config STM32_RCC
@@ -255,3 +276,9 @@ config XLNX_VERSAL_TRNG
     bool
 
 source macio/Kconfig
+
+config IMX93_TMU
+    bool
+
+config IMX93_SEMA42
+    bool

@@ -27,6 +27,19 @@
 #include "target/arm/multiprocessing.h"
 #include "target/arm/trace.h"
 
+/*
+ * Optional machine-registered handler for non-PSCI SiP SMC calls. Used by the
+ * i.MX 93 SoC to service the i.MX SiP RPROC calls (Linux remoteproc booting /
+ * stopping the Cortex-M33). Returns true if it handled the call, writing the
+ * SMC return value to *ret.
+ */
+ARMSIPHandler arm_sip_handler;
+
+void arm_register_sip_handler(ARMSIPHandler handler)
+{
+    arm_sip_handler = handler;
+}
+
 bool arm_is_psci_call(ARMCPU *cpu, int excp_type)
 {
     /*
@@ -205,9 +218,32 @@ void arm_handle_psci_call(ARMCPU *cpu)
         break;
     case QEMU_PSCI_0_1_FN_MIGRATE:
     case QEMU_PSCI_0_2_FN_MIGRATE:
-    default:
+    default: {
+        /*
+         * Not a PSCI function. Offer it to an optional machine-registered
+         * SiP handler (used by the i.MX 93 SoC for the i.MX SiP RPROC calls
+         * that boot/stop the Cortex-M33); if unhandled, report unsupported.
+         */
+        uint64_t sip_ret[4] = { 0, 0, 0, 0 };
+
+        if (arm_sip_handler &&
+            arm_sip_handler(param[0], param[1], param[2], param[3], sip_ret)) {
+            if (is_a64(env)) {
+                env->xregs[0] = sip_ret[0];
+                env->xregs[1] = sip_ret[1];
+                env->xregs[2] = sip_ret[2];
+                env->xregs[3] = sip_ret[3];
+            } else {
+                env->regs[0] = sip_ret[0];
+                env->regs[1] = sip_ret[1];
+                env->regs[2] = sip_ret[2];
+                env->regs[3] = sip_ret[3];
+            }
+            return;
+        }
         ret = QEMU_PSCI_RET_NOT_SUPPORTED;
         break;
+    }
     }
 
 err:

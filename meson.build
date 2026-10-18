@@ -3658,6 +3658,7 @@ if have_system
     'hw/net',
     'hw/net/can',
     'hw/nitro',
+    'hw/npu',
     'hw/nubus',
     'hw/nvme',
     'hw/nvram',

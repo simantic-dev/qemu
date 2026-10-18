@@ -32,3 +32,16 @@ config PNV_SPI
 config ALLWINNER_A10_SPI
     bool
     select SSI
+
+config IMX93_LPSPI
+    bool
+    select SSI
+
+config IMX93_FLEXSPI
+    bool
+    select SSI
+    select SSI_M25P80
+
+config SPI_LINK
+    bool
+    select SSI

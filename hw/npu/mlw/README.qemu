@@ -1,0 +1,44 @@
+Vendored Arm "mlw" weight-codec decoder
+=======================================
+
+This directory contains an imported copy of the Ethos-U "mlw" (machine-learning
+weight) entropy decoder, used by hw/npu/ethos_u_weights.c to decompress the
+Vela-compiled weight stream that the guest hands to the modelled Ethos-U NPU.
+
+Provenance
+----------
+  Project: Arm ethos-u-vela (NXP downstream fork)
+  Source:  https://github.com/nxp-imx/ethos-u-vela
+  Branch:  lf-6.12.49_2.2.0
+  Path:    ethosu/mlw_codec/{mlw_decode.c,mlw_decode.h,mlw_common.h}
+  License: Apache-2.0 (see LICENSE in this directory and the per-file headers)
+
+Only the *decoder* is imported. The matching reorder (weight traversal) and
+scale/bias packing are NOT vendored: their inverse is reimplemented as QEMU's
+own GPL-2.0-or-later code in hw/npu/ethos_u_weights.c, and validated against the
+reference Python module (ethosu.mlw_codec) by tests/unit/test-ethos-u-mlw.c
+using vectors committed under tests/data/ethos-u/ (regenerate with gen.py).
+
+Local modifications
+-------------------
+Kept as small and as clearly marked as possible so re-importing stays easy:
+
+  mlw_decode.c
+    - includes "qemu/osdep.h" instead of the individual libc headers;
+    - a bitstream underrun sets an error flag and unwinds gracefully (returning
+      a short/empty result) instead of printf()+exit(1), so malformed guest
+      data cannot terminate the QEMU process;
+    - the slice/chunk loops bail out once that error flag is set.
+  The decode algorithm itself is byte-for-byte identical to upstream.
+
+  mlw_decode.h
+    - newly written here (the upstream header is not part of the import set);
+      declares only int mlw_decode(...).
+
+Hardening note
+--------------
+The decoder still contains a handful of assert()s guarding bitstream invariants
+(palette/GRC-divisor ranges). The caller in ethos_u_weights.c length-checks the
+decoded weight count against the value expected from the command stream and
+rejects a mismatch; tightening these asserts into soft errors is tracked for the
+upstream submission.

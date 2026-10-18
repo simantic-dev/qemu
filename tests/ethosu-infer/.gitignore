@@ -1,0 +1,4 @@
+ethosu_infer
+host/vela_out/
+host/vela_shared/
+host/*_summary_*.csv

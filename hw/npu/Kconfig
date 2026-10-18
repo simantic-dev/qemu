@@ -1,0 +1,2 @@
+config ETHOS_U
+    bool
