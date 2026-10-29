@@ -731,3 +731,4 @@ config TI_AM64X
     select ARM_GICV3
     select SERIAL_MM
     select UNIMP
+    select TI_SCI_STUB

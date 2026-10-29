@@ -87,9 +87,6 @@ static const Am64xBlock am64x_blocks[] = {
     { "am64x.dmass0_intaggr_gcntrti", 0x04a000000, 0x100000 },
     { "am64x.dmass0_bcdma_ringrt", 0x04bc00000, 0x100000 },
     { "am64x.dmsc0_intaggr_intr", 0x044300000, 0x80000 },
-    { "am64x.dmass0_sec_proxy_scfg", 0x04a400000, 0x80000 },
-    { "am64x.dmass0_sec_proxy_rt", 0x04a600000, 0x80000 },
-    { "am64x.dmass0_sec_proxy_src_target_data", 0x04d000000, 0x80000 },
     { "am64x.mcu_m4fss0_blazar_iram", 0x005000000, 0x40000 },
     { "am64x.timermgr0_timer_mgr_timers", 0x037000000, 0x40000 },
     { "am64x.rom0_rom", 0x041800000, 0x40000 },
@@ -732,6 +729,26 @@ static void ti_am64x_init(MachineState *machine)
         serial_mm_init(sysmem, AM64X_UART_BASE + i * AM64X_UART_STRIDE, 2,
                        qdev_get_gpio_in(s->gic, AM64X_UART_IRQ0 + i),
                        AM64X_UART_CLK / 16, serial_hd(i), DEVICE_LITTLE_ENDIAN);
+    }
+
+    {
+        /* secure proxy + stub DMSC: target_data, rt, scfg; rx SPI 34 */
+        DeviceState *sci = qdev_new("ti-sci-stub");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(sci), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(sci), 0, 0x4d000000);
+        sysbus_mmio_map(SYS_BUS_DEVICE(sci), 1, 0x4a600000);
+        sysbus_mmio_map(SYS_BUS_DEVICE(sci), 2, 0x4a400000);
+        sysbus_connect_irq(SYS_BUS_DEVICE(sci), 0, qdev_get_gpio_in(s->gic, 34));
+    }
+
+    {
+        static const hwaddr i2c[] = { 0x4900000, 0x4910000, 0x20000000,
+                                      0x20010000, 0x20020000, 0x20030000 };
+        for (int i = 0; i < G_N_ELEMENTS(i2c); i++) {
+            DeviceState *d = qdev_new("ti-am64x-i2c-id");
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);
+            sysbus_mmio_map(SYS_BUS_DEVICE(d), 0, i2c[i]);
+        }
     }
 
     s->binfo.ram_size = machine->ram_size;

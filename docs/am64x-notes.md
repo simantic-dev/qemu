@@ -31,9 +31,21 @@ Without -dtb the machine generates a minimal DT (cpus, timer, GICv3, 7 ns16550a 
 ## Real k3-am642-sk.dtb (-dtb)
 dtb and Image come from ~/linux-imx in lima VM `tilawa` (arch/arm64/boot/dts/ti/k3-am642-sk.dtb; the Image has ARCH_K3, TI_SCI, 8250_OMAP). No build needed.
     -accel tcg -dtb k3-am642-sk.dtb -append "console=ttyS2,115200n8 earlycon=ns16550a,mmio32,0x2800000 rdinit=/bin/sh"
-Kernel reaches init (3 s) but has no console: ti-sci probe fails (-22, "Unable to startup the chan") so UART clocks/power domains never come up;
-optee probe also fails (-22). init then dies, panic. unimp hits: padcfg_ctrl0_cfg0 24, ctrl_mmr0_cfg0 12, dmass0_sec_proxy_scfg 1, dmass0_sec_proxy_rt 1.
-Main blocker: TISCI over the DMASS secure proxy (message manager mailbox, DMSC firmware) needs a model.
+Stock DT now boots to a `~ #` shell on ttyS2 (8250_omap UART needs nothing extra; the ns16550a model is enough).
+Command (dtb at ~/ahnaf/am64x-linux/k3-am642-sk.dtb, kernel/initrd as above, accel tcg or hvf):
+    qemu-system-aarch64 -M ti-am64x -accel tcg -dtb k3-am642-sk.dtb -kernel Image -initrd initrd.cpio.gz -nographic -serial mon:stdio -monitor none \
+      -append "console=ttyS2,115200n8 earlycon=ns16550a,mmio32,0x2800000 rdinit=/bin/sh" [-d unimp -D unimp.log]
+Time to shell (process start to prompt, pty harness): tcg 4.6 s, hvf 4.6 s (kernel timestamp of "Run /bin/sh" 4.0 s tcg / 2.8 s hvf; dominated by 500 ms probe timeouts in cadence-qspi, cpsw, sdhci).
+
+Modelled in `hw/misc/ti-sci-stub.c`:
+- `ti-sci-stub`: secure proxy (target_data 0x4d000000, rt 0x4a600000, scfg 0x4a400000, rx IRQ SPI 34) plus a fake DMSC. Tx thread 13 (one credit always),
+  rx thread 12 (dir bit 31 in scfg ctrl, count in rt status); the write to the last data word (reg 14) runs the request, the read of the last word pops the response and drops the IRQ.
+  Every request is ACKed with a zeroed payload; specials: VERSION (ABI 3.1), GET_DEVICE_STATE (ON), GET_CLOCK_STATE (ready), GET_CLOCK_FREQ (48 MHz), QUERY_CLOCK_FREQ (target), GET_RESOURCE_RANGE (0,64).
+- `ti-am64x-i2c-id`: ID/SYSS-only OMAP I2C v2 stub on the 6 I2C controllers. Without it i2c-omap oopses (unaligned write through the scheme-0 register map when REVNB reads 0). No bus transfers.
+
+Remaining failed probes (dmesg, same on tcg and hvf): optee (-22, no TEE), clk "failed to reparent" (assigned-clock-parents; stub reports 0 clock parents),
+pca953x 1-0070 (-16, i2c not modelled), am65-cpsw-nuss (-22, "error initializing ale engine", mdio idle timeout), cadence-qspi (busy timeout, FIFO depth 1), sdhci-am654 fa10000.mmc (-110).
+Top unimp hits over a boot: fss0_ospi_flash_cfg reads 761550 tcg / 461012 hvf (qspi poll loops), cpsw0_cpsw3 reads 33842 / 31786, padcfg_ctrl0_cfg0 88 / 77 each r+w, ctrl_mmr0_cfg0 15 reads, gpio0/gpio1 writes 18/13.
 
 ## Unimplemented blocks
 `hw/arm/ti-am64x.c` has 505 TRM Table 2-1 MAIN blocks, named `am64x.<block>` and sorted largest first so small blocks win overlaps.
