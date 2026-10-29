@@ -28,6 +28,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/irq.h"
 #include "hw/arm/virt.h"
+#include "hw/arm/ti-am64x.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "system/cpus.h"
@@ -1354,8 +1355,12 @@ hv_return_t hvf_arch_vm_create(MachineState *ms, uint32_t pa_range)
              * but past hv_vm_create()
              */
             hv_gic_config_t cfg = hv_gic_config_create();
-            hv_gic_config_set_distributor_base(cfg, 0x08000000);
-            hv_gic_config_set_redistributor_base(cfg, 0x080A0000);
+            bool am64x = object_dynamic_cast(OBJECT(ms), "ti-am64x-machine");
+
+            hv_gic_config_set_distributor_base(cfg, am64x ? AM64X_GICD_BASE
+                                                          : 0x08000000);
+            hv_gic_config_set_redistributor_base(cfg, am64x ? AM64X_GICR_BASE
+                                                            : 0x080A0000);
             ret = hv_gic_create(cfg);
             if (ret != HV_SUCCESS) {
                 error_report("error creating platform VGIC");

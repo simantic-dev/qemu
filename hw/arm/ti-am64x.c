@@ -19,6 +19,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/bsa.h"
+#include "hw/arm/ti-am64x.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/char/serial-mm.h"
 #include "hw/intc/arm_gicv3_common.h"
@@ -32,8 +33,6 @@
 #include "target/arm/cpu.h"
 
 #define AM64X_NUM_CPUS      2
-#define AM64X_GICD_BASE     0x01800000
-#define AM64X_GICR_BASE     0x01840000
 #define AM64X_GICR_STRIDE   0x20000
 #define AM64X_MSRAM_BASE    0x70000000
 #define AM64X_MSRAM_SIZE    (2 * MiB)
