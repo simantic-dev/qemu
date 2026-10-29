@@ -685,7 +685,7 @@ static void ti_am64x_init(MachineState *machine)
     }
 
     memory_region_add_subregion(sysmem, AM64X_DDR_BASE, machine->ram);
-    memory_region_init_ram(&s->msram, OBJECT(machine), "am64x.msram",
+    memory_region_init_ram(&s->msram, NULL, "am64x.msram",
                            AM64X_MSRAM_SIZE, &error_fatal);
     memory_region_add_subregion(sysmem, AM64X_MSRAM_BASE, &s->msram);
 
