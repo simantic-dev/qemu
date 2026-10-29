@@ -1438,7 +1438,10 @@ int hvf_arch_init_vcpu(CPUState *cpu)
         }
 
         if (ri) {
-            assert(!(ri->type & ARM_CP_NO_RAW));
+            if (ri->type & ARM_CP_NO_RAW) {
+                /* e.g. ID_AA64ISAR0_EL1 (FEAT_RNG_TRAP); read-only ID reg */
+                continue;
+            }
             arm_cpu->cpreg_indexes[sregs_cnt++] = kvm_id;
         }
     }
