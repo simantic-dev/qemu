@@ -261,3 +261,6 @@ source macio/Kconfig
 
 config TI_SCI_STUB
     bool
+
+config TI_BOUNDARY
+    bool

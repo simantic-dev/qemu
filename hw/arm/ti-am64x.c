@@ -45,6 +45,8 @@
 #define AM64X_NUM_UARTS     7
 #define AM64X_UART_CLK      48000000
 #define AM64X_GTC_HZ        200000000 /* GTC clock; TCG only, HVF uses host */
+#define AM64X_BOUNDARY_BASE 0x29020000 /* mailbox@29020000, r5fss0-core0 */
+#define AM64X_BOUNDARY_SPI  80         /* two lines: 80, 81 */
 
 typedef struct {
     const char *name;
@@ -564,6 +566,8 @@ typedef struct TiAm64xState {
     DeviceState *gic;
     MemoryRegion msram;
     struct arm_boot_info binfo;
+    char *boundary_record;
+    char *boundary_replay;
 } TiAm64xState;
 
 #define TYPE_TI_AM64X_MACHINE MACHINE_TYPE_NAME("ti-am64x")
@@ -686,6 +690,9 @@ static void ti_am64x_init(MachineState *machine)
     memory_region_add_subregion(sysmem, AM64X_MSRAM_BASE, &s->msram);
 
     for (int i = 0; i < G_N_ELEMENTS(am64x_blocks); i++) {
+        if (am64x_blocks[i].base == AM64X_BOUNDARY_BASE) {
+            continue; /* the boundary tap below owns the mailbox */
+        }
         create_unimplemented_device(am64x_blocks[i].name, am64x_blocks[i].base,
                                     am64x_blocks[i].size);
     }
@@ -751,6 +758,23 @@ static void ti_am64x_init(MachineState *machine)
         }
     }
 
+    {
+        DeviceState *tap = qdev_new("ti-boundary");
+        qdev_prop_set_uint64(tap, "base", AM64X_BOUNDARY_BASE);
+        if (s->boundary_record) {
+            qdev_prop_set_string(tap, "record", s->boundary_record);
+        }
+        if (s->boundary_replay) {
+            qdev_prop_set_string(tap, "replay", s->boundary_replay);
+        }
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(tap), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(tap), 0, AM64X_BOUNDARY_BASE);
+        for (int i = 0; i < 2; i++) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(tap), i,
+                               qdev_get_gpio_in(s->gic, AM64X_BOUNDARY_SPI + i));
+        }
+    }
+
     s->binfo.ram_size = machine->ram_size;
     s->binfo.loader_start = AM64X_DDR_BASE;
     s->binfo.get_dtb = am64x_dtb;
@@ -770,9 +794,27 @@ static const char *am64x_default_cpu_type(const MachineState *ms)
                          : ARM_CPU_TYPE_NAME("max");
 }
 
+#define AM64X_STR_PROP(getter, setter, field)                       \
+    static char *getter(Object *obj, Error **errp)                  \
+    {                                                               \
+        return g_strdup(TI_AM64X_MACHINE(obj)->field);              \
+    }                                                               \
+    static void setter(Object *obj, const char *v, Error **errp)    \
+    {                                                               \
+        g_free(TI_AM64X_MACHINE(obj)->field);                       \
+        TI_AM64X_MACHINE(obj)->field = g_strdup(v);                 \
+    }
+AM64X_STR_PROP(am64x_get_record, am64x_set_record, boundary_record)
+AM64X_STR_PROP(am64x_get_replay, am64x_set_replay, boundary_replay)
+
 static void ti_am64x_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+
+    object_class_property_add_str(oc, "boundary-record", am64x_get_record,
+                                  am64x_set_record);
+    object_class_property_add_str(oc, "boundary-replay", am64x_get_replay,
+                                  am64x_set_replay);
 
     mc->desc = "TI AM64x (AM6442) Cortex-A53 cluster";
     mc->init = ti_am64x_init;
