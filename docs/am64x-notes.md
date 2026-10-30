@@ -51,3 +51,12 @@ Top unimp hits over a boot: fss0_ospi_flash_cfg reads 761550 tcg / 461012 hvf (q
 `hw/arm/ti-am64x.c` has 505 TRM Table 2-1 MAIN blocks, named `am64x.<block>` and sorted largest first so small blocks win overlaps.
 Count accesses with: `grep -o 'unimplemented device [a-z]* (size [0-9]*, offset' unimp.log` or `grep -c am64x.ctrl_mmr0 unimp.log`.
 Blocks of interest: ctrl_mmr0_cfg0, psc0_psc, dmass0_sec_proxy_*, dmsc0_*, dmass0_intaggr_*, dmass0_bcdma_*, dmass0_pktdma_*, gpio0/1, i2c*, mcspi*, mcan*, timer*, mailbox0_regs*, cpsw0_cpsw3, pru_icssg*, mmcsd*_mmc_*, usb0_*, pcie0_*.
+
+## Zephyr results
+Board: sk_am64/am6442/a53 (simantic-dev/zephyr agent/am64-a53-board-c5e2, fix 536d7e590ed). Zephyr v4.4.0 checkout 413b789deb3 is not the board branch; the branch pins SDK 1.0.1, so use that SDK (aarch64 toolchain under gnu/).
+Build: `west build -p always -b sk_am64/am6442/a53 samples/hello_world -d build-hello` (same for synchronization, build-sync).
+
+- Blocker fixed in board DT: main_mmr_cfg0 reg was 32 KiB but the SoC unlocks partitions at 0x43009008. Data abort at FAR 0x43009008 in k3_unlock_all_ctrl_partitions, then fatal. Board now sets 128 KiB.
+- tcg, hello_world: `Booting Zephyr OS build v4.4.0-3839-g68983e7b7f66`, `Secondary CPU core 1 (MPID:0x1) is up`, `Hello World! sk_am64/am6442/a53`. Output within ~0.1 s of start.
+- tcg, synchronization: thread_a/thread_b alternate, one line every ~0.75 s (sample nominal 0.6 s: 100 ms busy + 500 ms sleep per turn). Not yet checked against the counter rate.
+- hvf, both samples: no output. Guest entry 0x8200111c takes instruction abort ifsc=6 (translation fault L2) before any code runs, then vCPU goes to PC 0 and `unhandled exception ec=0x20` repeats. A bare `b .` image at 0x82000000 and 0x80200000 runs cleanly under hvf, so the trigger is specific to the Zephyr image. Cause not found.
