@@ -732,3 +732,4 @@ config TI_AM64X
     select SERIAL_MM
     select UNIMP
     select TI_SCI_STUB
+    select TI_BOUNDARY
