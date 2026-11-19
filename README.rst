@@ -2,6 +2,10 @@
 QEMU README
 ===========
 
+.. simantic-banner
+
+**Simulate your firmware with no hardware.** `Simantic <https://simantic.com>`_ simulates the whole board, peripherals, sensors and buses included. Try it free at `simantic.com <https://simantic.com>`_, or run it locally: ``curl -fsSL https://simantic.com/install | sh``
+
 QEMU is a generic and open source machine & userspace emulator and
 virtualizer.
 
